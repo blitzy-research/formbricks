@@ -8,6 +8,7 @@ import {
   CreditCardIcon,
   FileDigitIcon,
   FileType2Icon,
+  GaugeIcon,
   Grid3X3Icon,
   HomeIcon,
   ImageIcon,
@@ -272,6 +273,20 @@ export const getElementTypes = (t: TFunction): TElement[] => [
       stripeIntegration: {
         publicKey: "",
       },
+    },
+  },
+  {
+    id: TSurveyElementTypeEnum.Slider,
+    label: t("templates.slider"),
+    description: t("templates.slider_description"),
+    icon: GaugeIcon,
+    preset: {
+      headline: createI18nString("", []),
+      range: { min: 0, max: 100 },
+      step: 1,
+      lowerLabel: createI18nString(t("templates.slider_lower_label_default", "Low"), []),
+      upperLabel: createI18nString(t("templates.slider_upper_label_default", "High"), []),
+      showValue: true,
     },
   },
 ];

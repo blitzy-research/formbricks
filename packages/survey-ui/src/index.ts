@@ -49,3 +49,4 @@ export { CTA, type CTAProps } from "@/components/elements/cta";
 export { Consent, type ConsentProps } from "@/components/elements/consent";
 export { OpinionScale, type OpinionScaleProps } from "@/components/elements/opinion-scale";
 export { Payment, type PaymentProps } from "@/components/elements/payment";
+export { Slider, type SliderProps } from "@/components/elements/slider";

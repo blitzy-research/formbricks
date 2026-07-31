@@ -29,6 +29,7 @@ import {
   ZSurveyPictureSelectionElement,
   ZSurveyRankingElement,
   ZSurveyRatingElement,
+  ZSurveySliderElement,
 } from "./elements";
 import { validateElementLabels } from "./elements-validation";
 import {
@@ -3080,6 +3081,14 @@ const isInvalidOperatorsForElementType = (
         isInvalidOperator = true;
       }
       break;
+    // A slider captures a single continuous value, so only presence-based operators apply. This mirrors
+    // the Payment case and keeps this switch exhaustive over TSurveyElementTypeEnum; without the case a
+    // slider would fall through and every operator would be silently accepted.
+    case TSurveyElementTypeEnum.Slider:
+      if (!["isSubmitted", "isSkipped"].includes(operator)) {
+        isInvalidOperator = true;
+      }
+      break;
     case TSurveyElementTypeEnum.CTA:
       if (!["isClicked", "isNotClicked"].includes(operator)) {
         isInvalidOperator = true;
@@ -4333,6 +4342,18 @@ export const ZSurveyElementSummaryPayment = z.object({
 
 export type TSurveyElementSummaryPayment = z.infer<typeof ZSurveyElementSummaryPayment>;
 
+export const ZSurveyElementSummarySlider = z.object({
+  type: z.literal(TSurveyElementTypeEnum.Slider),
+  element: ZSurveySliderElement,
+  responseCount: z.number(),
+  average: z.number(),
+  dismissed: z.object({
+    count: z.number(),
+  }),
+});
+
+export type TSurveyElementSummarySlider = z.infer<typeof ZSurveyElementSummarySlider>;
+
 export const ZSurveyElementSummary = z.union([
   ZSurveyElementSummaryOpenText,
   ZSurveyElementSummaryMultipleChoice,
@@ -4350,6 +4371,7 @@ export const ZSurveyElementSummary = z.union([
   ZSurveyElementSummaryContactInfo,
   ZSurveyElementSummaryOpinionScale,
   ZSurveyElementSummaryPayment,
+  ZSurveyElementSummarySlider,
 ]);
 
 export type TSurveyElementSummary = z.infer<typeof ZSurveyElementSummary>;

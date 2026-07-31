@@ -255,12 +255,12 @@ export const validators: Record<TValidationRuleType, TValidator> = {
         return { valid: true };
       }
 
-      // Alignment is measured from `offset` (the element's range minimum) rather than from zero, so a
-      // grid of min=10/step=5 accepts 15 but rejects 12.
+      // Alignment is measured from `offset`, the grid's origin, rather than from zero, so a grid
+      // anchored at 10 with a step of 5 accepts 15 but rejects 12.
       const offset = typedParams.offset ?? 0;
       // Reconstruct the nearest multiple and measure drift in value space instead of using the modulo
-      // operator: `(value - offset) % step` is unreliable for decimal steps because 0.3 / 0.1 evaluates
-      // to 2.9999999999999996. The tolerance is scale-relative so it is neither too tight for large
+      // operator, which is unreliable for decimal steps because 0.3 / 0.1 evaluates to
+      // 2.9999999999999996. The tolerance is scale-relative so it is neither too tight for large
       // magnitudes nor too loose for very small steps.
       const nearest = Math.round((numValue - offset) / step);
       const drift = Math.abs(numValue - (offset + nearest * step));
