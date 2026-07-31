@@ -30,6 +30,7 @@ export const ZValidationRuleType = z.enum([
   "maxValue",
   "isGreaterThan",
   "isLessThan",
+  "stepMultipleOf",
 
   // Selection rules (MultiSelect)
   "minSelections",
@@ -84,6 +85,17 @@ export const ZValidationRuleParamsMinValue = z.object({
 
 export const ZValidationRuleParamsMaxValue = z.object({
   max: z.number(),
+});
+
+// Grid-alignment rule params: the submitted value must sit on a `step` grid measured from `offset`.
+// `offset` is optional so the rule stays usable for grids anchored at zero (validators default it to 0);
+// when supplied it anchors alignment at a non-zero origin, e.g. min=10/step=5 accepts 15 but rejects 12.
+// Both fields are intentionally bare z.number() - matching ZValidationRuleParamsMinValue/MaxValue above.
+// Rejecting step <= 0 belongs to the owning element schema's refinement, not here, so that a malformed
+// step produces exactly one error message instead of two differently-worded ones.
+export const ZValidationRuleParamsStepMultipleOf = z.object({
+  step: z.number(),
+  offset: z.number().optional(),
 });
 
 export const ZValidationRuleParamsMinSelections = z.object({
@@ -184,6 +196,7 @@ export const ZValidationRuleParams = z.union([
   ZValidationRuleParamsAnswerAllRows,
   ZValidationRuleParamsFileExtensionIs,
   ZValidationRuleParamsFileExtensionIsNot,
+  ZValidationRuleParamsStepMultipleOf,
 ]);
 
 export type TValidationRuleParams = z.infer<typeof ZValidationRuleParams>;
@@ -215,6 +228,7 @@ export type TValidationRuleParamsMinRowsAnswered = z.infer<typeof ZValidationRul
 export type TValidationRuleParamsAnswerAllRows = z.infer<typeof ZValidationRuleParamsAnswerAllRows>;
 export type TValidationRuleParamsFileExtensionIs = z.infer<typeof ZValidationRuleParamsFileExtensionIs>;
 export type TValidationRuleParamsFileExtensionIsNot = z.infer<typeof ZValidationRuleParamsFileExtensionIsNot>;
+export type TValidationRuleParamsStepMultipleOf = z.infer<typeof ZValidationRuleParamsStepMultipleOf>;
 
 // Validation rule stored on element - discriminated union with type at top level
 // Field property is optional and used for address/contact info elements to target specific sub-fields
@@ -298,6 +312,10 @@ export const APPLICABLE_RULES: Record<string, TValidationRuleType[]> = {
   contactInfo: [...CONTACT_INFO_RULES],
   payment: ["minValue", "maxValue"],
   opinionScale: [],
+  // Intentionally empty, mirroring opinionScale: a slider's range and step-grid constraints are
+  // intrinsic to its configuration and are injected by the evaluator at validation time, so they
+  // are never author-selectable. Exposing them here would duplicate intrinsic rules in the editor.
+  slider: [],
 };
 
 // Type helper to filter validation rules by allowed types

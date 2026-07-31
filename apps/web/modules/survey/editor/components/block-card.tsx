@@ -232,7 +232,9 @@ export const BlockCard = ({
       additionalProps.project = project;
     }
 
-    // @ts-expect-error — commonProps + additionalProps cover all required fields at runtime; TS cannot narrow the form component union statically
+    // commonProps + additionalProps cover all required fields at runtime; TS cannot narrow the form
+    // component union statically, so a suppression is required here whenever the lookup above resolves
+    // to a concrete component union rather than to an element type the map does not yet cover.
     return <FormComponent {...commonProps} {...additionalProps} />;
   };
 

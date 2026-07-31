@@ -26,6 +26,7 @@ import type {
   TValidationRuleParamsMinValue,
   TValidationRuleParamsPattern,
   TValidationRuleParamsPhone,
+  TValidationRuleParamsStepMultipleOf,
   TValidationRuleParamsUrl,
   TValidationRuleType,
   TValidatorCheckResult,
@@ -231,6 +232,45 @@ export const validators: Record<TValidationRuleType, TValidator> = {
     getDefaultMessage: (params: TValidationRuleParams, _element: TSurveyElement, t: TFunction): string => {
       const typedParams = params as TValidationRuleParamsMaxValue;
       return t("errors.max_value", { max: typedParams.max });
+    },
+  },
+
+  stepMultipleOf: {
+    check: (value: TResponseDataValue, params: TValidationRuleParams): TValidatorCheckResult => {
+      const typedParams = params as TValidationRuleParamsStepMultipleOf;
+      // Skip validation if value is empty (let required handle empty)
+      if (isEmpty(value)) {
+        return { valid: true };
+      }
+
+      const numValue = parseNumericValue(value);
+      if (numValue === null) {
+        return { valid: true }; // Let pattern/type validation handle non-numeric
+      }
+
+      const { step } = typedParams;
+      // A malformed step is the owning element schema's error to report, not this rule's, so stay
+      // graceful instead of dividing by zero and producing a second, differently-worded message.
+      if (!Number.isFinite(step) || step <= 0) {
+        return { valid: true };
+      }
+
+      // Alignment is measured from `offset` (the element's range minimum) rather than from zero, so a
+      // grid of min=10/step=5 accepts 15 but rejects 12.
+      const offset = typedParams.offset ?? 0;
+      // Reconstruct the nearest multiple and measure drift in value space instead of using the modulo
+      // operator: `(value - offset) % step` is unreliable for decimal steps because 0.3 / 0.1 evaluates
+      // to 2.9999999999999996. The tolerance is scale-relative so it is neither too tight for large
+      // magnitudes nor too loose for very small steps.
+      const nearest = Math.round((numValue - offset) / step);
+      const drift = Math.abs(numValue - (offset + nearest * step));
+      const tolerance = 1e-9 * Math.max(1, Math.abs(step), Math.abs(numValue));
+
+      return { valid: drift <= tolerance };
+    },
+    getDefaultMessage: (params: TValidationRuleParams, _element: TSurveyElement, t: TFunction): string => {
+      const typedParams = params as TValidationRuleParamsStepMultipleOf;
+      return t("errors.step_multiple_of", { step: typedParams.step });
     },
   },
 

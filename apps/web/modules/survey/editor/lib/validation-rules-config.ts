@@ -101,6 +101,12 @@ export const RULE_TYPE_CONFIG: Record<
     valueType: "number",
     valuePlaceholder: "100",
   },
+  stepMultipleOf: {
+    labelKey: "step_multiple_of",
+    needsValue: true,
+    valueType: "number",
+    valuePlaceholder: "5",
+  },
   isLaterThan: {
     labelKey: "is_later_than",
     needsValue: true,

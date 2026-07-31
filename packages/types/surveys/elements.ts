@@ -375,6 +375,49 @@ export const ZSurveyPaymentElement = ZSurveyElementBase.extend({
 
 export type TSurveyPaymentElement = z.infer<typeof ZSurveyPaymentElement>;
 
+// Slider Element
+// `range` intentionally overrides the numeric-literal union declared on ZSurveyElementBase: a slider is a
+// continuous scale described by its own { min, max } bounds rather than one of the fixed rating scales.
+export const ZSurveySliderElement = ZSurveyElementBase.extend({
+  type: z.literal(TSurveyElementTypeEnum.Slider),
+  range: z.object({
+    min: z.number(),
+    max: z.number(),
+  }),
+  step: z.number(),
+  lowerLabel: ZI18nString.optional(),
+  upperLabel: ZI18nString.optional(),
+  showValue: z.boolean().optional().default(true),
+}).superRefine((data, ctx) => {
+  if (data.range.min >= data.range.max) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Minimum value must be less than the maximum value",
+      path: ["range"],
+    });
+  }
+
+  if (data.step <= 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Step must be greater than zero",
+      path: ["step"],
+    });
+  }
+
+  // Only meaningful once the bounds and the step are individually valid, otherwise the author would see
+  // two errors for a single mistake.
+  if (data.range.min < data.range.max && data.step > 0 && data.step > data.range.max - data.range.min) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Step cannot be larger than the range",
+      path: ["step"],
+    });
+  }
+});
+
+export type TSurveySliderElement = z.infer<typeof ZSurveySliderElement>;
+
 // Union of all element types
 export const ZSurveyElement = z.union([
   ZSurveyOpenTextElement,
@@ -394,6 +437,7 @@ export const ZSurveyElement = z.union([
   ZSurveyContactInfoElement,
   ZSurveyOpinionScaleElement,
   ZSurveyPaymentElement,
+  ZSurveySliderElement,
 ]);
 
 export type TSurveyElement = z.infer<typeof ZSurveyElement>;

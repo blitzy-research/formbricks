@@ -417,8 +417,8 @@ describe("Epic 4.2 — Backward Compatibility Tests", () => {
   // Phase 4 — TSurveyElementTypeEnum completeness
   // -------------------------------------------------------------------------
   describe("TSurveyElementTypeEnum completeness", () => {
-    test("enum contains exactly 17 members", () => {
-      expect(Object.values(TSurveyElementTypeEnum).length).toBe(17);
+    test("enum contains exactly 18 members", () => {
+      expect(Object.values(TSurveyElementTypeEnum).length).toBe(18);
     });
 
     test("all 15 legacy types are present in the enum", () => {
@@ -470,6 +470,7 @@ describe("Epic 4.2 — Backward Compatibility Tests", () => {
       expect(TSurveyElementTypeEnum.ContactInfo).toBe("contactInfo");
       expect(TSurveyElementTypeEnum.Payment).toBe("payment");
       expect(TSurveyElementTypeEnum.OpinionScale).toBe("opinionScale");
+      expect(TSurveyElementTypeEnum.Slider).toBe("slider");
     });
   });
 
