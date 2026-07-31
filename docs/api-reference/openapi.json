@@ -6426,7 +6426,8 @@
                             "rating",
                             "cal",
                             "ranking",
-                            "contactInfo"
+                            "contactInfo",
+                            "slider"
                           ],
                           "type": "string"
                         }

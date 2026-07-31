@@ -380,10 +380,7 @@ export type TSurveyPaymentElement = z.infer<typeof ZSurveyPaymentElement>;
 // continuous scale described by its own { min, max } bounds rather than one of the fixed rating scales.
 export const ZSurveySliderElement = ZSurveyElementBase.extend({
   type: z.literal(TSurveyElementTypeEnum.Slider),
-  range: z.object({
-    min: z.number(),
-    max: z.number(),
-  }),
+  range: z.object({ min: z.number(), max: z.number() }),
   step: z.number(),
   lowerLabel: ZI18nString.optional(),
   upperLabel: ZI18nString.optional(),
