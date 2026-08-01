@@ -9,6 +9,7 @@
     "finish": "Tugatish",
     "language_switch": "Tilni almashtirish",
     "next": "Keyingisi",
+    "no_value_selected": "Qiymat tanlanmagan",
     "open_in_new_tab": "Yangi oynada ochish",
     "people_responded": "{count, plural, one {1 kishi javob berdi} other {{count} kishi javob berdi}}",
     "please_retry_now_or_try_again_later": "Iltimos, hozir qayta urinib ko‘ring yoki keyinroq urinib ko‘ring.",

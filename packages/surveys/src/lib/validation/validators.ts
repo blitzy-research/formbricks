@@ -72,119 +72,122 @@ const parseNumericValue = (value: TResponseDataValue): number | null => {
   return null;
 };
 
-// Largest decimal scale that can still be compared as an exact integer: 10 ** 16 already exceeds
-// Number.MAX_SAFE_INTEGER, so beyond 15 decimal places the scaled operands stop being trustworthy.
-const MAX_GRID_SCALE_DECIMALS = 15;
-// Fallback tolerance expressed in units of the last representable bit of the largest operand. Rounding a
+// Largest number of decimal places the grid test will scale to. The residual distance to the nearest grid
+// point is converted back to a double by dividing by 10 ** scale, and 10 ** 309 is already Infinity, so an
+// operand needing a finer scale cannot be judged and is rejected instead of guessed at. Nothing usable is
+// lost: a step that fine cannot be applied across any range the element schema accepts, because its
+// precision guard rejects a step the range's own magnitude cannot represent.
+const MAX_GRID_DECIMAL_SCALE = 300;
+// Residual tolerance expressed in units of the last representable bit of the value being judged. Rounding a
 // single multiply-add costs two to three of those units, so eight leaves headroom without ever reaching a
 // neighbouring grid point.
 const GRID_TOLERANCE_ULP_MULTIPLE = 8;
-// Hard cap on the fallback tolerance. It is a fraction of the STEP, never of the submitted value, which is
+// Hard cap on the residual tolerance. It is a fraction of the STEP, never of the submitted value, which is
 // what stops a large answer from buying itself a large tolerance.
 const GRID_TOLERANCE_STEP_FRACTION = 1e-6;
+// A finite double always prints as [-]digits[.digits][e(+|-)digits] - "0.2", "1e-7", "1.5e+21" - so these
+// three groups plus the sign describe every operand the grid test can be handed.
+const DECIMAL_NOTATION_PATTERN = /^(-?)(\d+)(?:\.(\d+))?(?:e([+-]\d+))?$/i;
 
 /**
- * Count the decimal places of a number, or null when they cannot be counted reliably.
- * Values that serialize in exponential notation (very large or very small magnitudes) yield null because
- * their digit count does not map onto a decimal scaling factor.
+ * A number expressed exactly as `digits / 10 ** scale`, with `digits` held as a BigInt so it is never
+ * subject to the 53-bit limit that makes scaled doubles untrustworthy at high magnitudes.
  */
-const countDecimalPlaces = (value: number): number | null => {
-  if (Number.isInteger(value)) {
-    return 0;
-  }
+interface TScaledDecimal {
+  digits: bigint;
+  scale: number;
+}
 
-  const text = String(value);
-  const separator = text.indexOf(".");
-  if (separator === -1) {
+/**
+ * Decompose a number into its exact decimal form, or null when it cannot be scaled within
+ * MAX_GRID_DECIMAL_SCALE.
+ *
+ * The decomposition is taken from the shortest decimal string that round-trips back to the same double,
+ * which is the decimal the survey author typed and the respondent sees - `0.2` rather than the binary
+ * fraction 0.200000000000000011102230246251565... Comparing those decimals is what makes a 0.1 grid accept
+ * 0.3, and it is exact: no digit of the printed form is discarded, so the returned pair describes the
+ * operand and nothing else.
+ */
+const toScaledDecimal = (value: number): TScaledDecimal | null => {
+  if (!Number.isFinite(value)) {
     return null;
   }
 
-  return text.length - separator - 1;
+  const match = DECIMAL_NOTATION_PATTERN.exec(String(value));
+  if (!match) {
+    return null;
+  }
+
+  const [, sign, whole, fraction = "", exponent = "0"] = match;
+  let digits = BigInt(whole + fraction);
+  let scale = fraction.length - Number(exponent);
+
+  if (scale < 0) {
+    // A positive exponent that outruns the fraction describes an integer, e.g. 1.5e+21. Fold it into the
+    // digits so every operand ends up with a non-negative scale and the three can share one.
+    digits *= 10n ** BigInt(-scale);
+    scale = 0;
+  } else if (scale > MAX_GRID_DECIMAL_SCALE) {
+    return null;
+  }
+
+  return { digits: sign === "-" ? -digits : digits, scale };
 };
 
 /**
- * Exact grid test. Scales value, step and offset to integers by their shared decimal scale and uses
- * integer remainder arithmetic, which is immune to the artefacts that make `%` unusable on decimals -
- * `0.3 / 0.1` evaluates to 2.9999999999999996, so `(value - offset) % step === 0` wrongly rejects 0.3 on
- * a 0.1 grid, whereas scaling both to 3 and 1 answers it exactly.
- * Returns null when the operands cannot be scaled faithfully, in which case the caller falls back to the
- * bounded drift comparison. A non-null result is authoritative: it is only produced when every operand
- * round-trips through the scaling unchanged, so there is no representation error left to forgive.
+ * Restate a decimal on a coarser scale. Exact by construction: scaling up only appends zeroes.
  */
-const isOnGridExactly = (value: number, step: number, offset: number): boolean | null => {
-  const valuePlaces = countDecimalPlaces(value);
-  const stepPlaces = countDecimalPlaces(step);
-  const offsetPlaces = countDecimalPlaces(offset);
-  if (valuePlaces === null || stepPlaces === null || offsetPlaces === null) {
-    return null;
-  }
-
-  const decimals = Math.max(valuePlaces, stepPlaces, offsetPlaces);
-  if (decimals > MAX_GRID_SCALE_DECIMALS) {
-    return null;
-  }
-
-  const scale = 10 ** decimals;
-  const scaledValue = Math.round(value * scale);
-  const scaledStep = Math.round(step * scale);
-  const scaledOffset = Math.round(offset * scale);
-  if (
-    !Number.isSafeInteger(scaledValue) ||
-    !Number.isSafeInteger(scaledStep) ||
-    !Number.isSafeInteger(scaledOffset) ||
-    scaledStep === 0
-  ) {
-    return null;
-  }
-
-  // Each scaled operand must reproduce its input exactly, otherwise the integers describe different
-  // numbers than the ones being validated and any verdict drawn from them would be meaningless.
-  if (scaledValue / scale !== value || scaledStep / scale !== step || scaledOffset / scale !== offset) {
-    return null;
-  }
-
-  const distance = scaledValue - scaledOffset;
-  if (!Number.isSafeInteger(distance)) {
-    return null;
-  }
-
-  return distance % scaledStep === 0;
-};
-
-/**
- * Bounded fallback for operands the exact test cannot decide. Reconstructs the nearest grid point instead
- * of dividing, then requires the drift to sit within a few units of floating-point representation error.
- * The tolerance is deliberately NOT proportional to the submitted value: scaling it that way lets a large
- * answer drift arbitrarily far off the grid and still pass.
- */
-const isWithinGridTolerance = (value: number, step: number, offset: number): boolean => {
-  const multiples = Math.round((value - offset) / step);
-  if (!Number.isFinite(multiples)) {
-    return false;
-  }
-
-  const nearest = offset + multiples * step;
-  if (!Number.isFinite(nearest)) {
-    return false;
-  }
-
-  const magnitude = Math.max(Math.abs(value), Math.abs(nearest), Math.abs(offset), Math.abs(step));
-  const representationSlack = magnitude * Number.EPSILON * GRID_TOLERANCE_ULP_MULTIPLE;
-  const tolerance = Math.min(representationSlack, step * GRID_TOLERANCE_STEP_FRACTION);
-
-  return Math.abs(value - nearest) <= tolerance;
-};
+const liftToScale = (decimal: TScaledDecimal, scale: number): bigint =>
+  decimal.digits * 10n ** BigInt(scale - decimal.scale);
 
 /**
  * Whether `value` sits on the grid of `step` anchored at `offset`.
+ *
+ * The verdict is decided by exact decimal arithmetic. All three operands are restated on one shared scale
+ * as BigInt integers and the remainder is taken there, which is immune both to the artefacts that make `%`
+ * unusable on decimals - `0.3 / 0.1` evaluates to 2.9999999999999996, so `(value - offset) % step === 0`
+ * wrongly rejects 0.3 on a 0.1 grid, whereas comparing 3 against 1 answers it exactly - and to the 53-bit
+ * ceiling that makes scaled *doubles* untrustworthy: at 1e15 the spacing between representable doubles is
+ * 0.125, so reconstructing the nearest point of a 0.2 grid there lands back on the submitted value and
+ * reports zero distance for a value that is half a step off. BigInts have no such ceiling, so magnitude
+ * changes nothing about the answer.
+ *
+ * Only one deviation from an exact grid point is forgiven, and only within a hard bound: the representation
+ * error the operands themselves carry. A client computing `min + n * step` in binary floating point yields
+ * 0.30000000000000004 for the third point of a 0.1 grid, which is that grid point for every practical
+ * purpose. The allowance is the smaller of a few units in the last place of the value and a millionth of
+ * the STEP - never a fraction of the submitted value, which is what stops a large answer from buying itself
+ * a large tolerance, and never enough to reach, let alone pass, a neighbouring grid point.
  */
 const isOnStepGrid = (value: number, step: number, offset: number): boolean => {
-  const exact = isOnGridExactly(value, step, offset);
-  if (exact !== null) {
-    return exact;
+  const scaledValue = toScaledDecimal(value);
+  const scaledStep = toScaledDecimal(step);
+  const scaledOffset = toScaledDecimal(offset);
+  // Fail closed: an operand that cannot be restated exactly cannot be shown to sit on the grid.
+  if (scaledValue === null || scaledStep === null || scaledOffset === null) {
+    return false;
   }
 
-  return isWithinGridTolerance(value, step, offset);
+  const scale = Math.max(scaledValue.scale, scaledStep.scale, scaledOffset.scale);
+  const stepDigits = liftToScale(scaledStep, scale);
+  if (stepDigits <= 0n) {
+    return false;
+  }
+
+  // Normalise the remainder to be non-negative so a value below the grid's origin is measured exactly like
+  // one above it: on a step-5 grid anchored at 0, -10 is on the grid and -7 is two away from -5.
+  const distance = liftToScale(scaledValue, scale) - liftToScale(scaledOffset, scale);
+  const remainder = ((distance % stepDigits) + stepDigits) % stepDigits;
+  if (remainder === 0n) {
+    return true;
+  }
+
+  const gapDigits = remainder < stepDigits - remainder ? remainder : stepDigits - remainder;
+  const gap = Number(gapDigits) / 10 ** scale;
+  const magnitude = Math.max(Math.abs(value), Math.abs(offset));
+  const representationSlack = magnitude * Number.EPSILON * GRID_TOLERANCE_ULP_MULTIPLE;
+
+  return gap <= Math.min(representationSlack, step * GRID_TOLERANCE_STEP_FRACTION);
 };
 
 /**

@@ -9,6 +9,7 @@
     "finish": "Finalizar",
     "language_switch": "Cambio de idioma",
     "next": "Siguiente",
+    "no_value_selected": "Ningún valor seleccionado",
     "open_in_new_tab": "Abrir en nueva pestaña",
     "people_responded": "{count, plural, one {1 persona respondió} other {{count} personas respondieron}}",
     "please_retry_now_or_try_again_later": "Por favor, inténtalo ahora o prueba más tarde.",

@@ -27,17 +27,12 @@ interface SliderElementFormProps {
 }
 
 /**
- * Reads the raw string of a numeric editor field and returns it only when it is a finite number.
+ * Reads a numeric editor field, returning the value only when it parses to a finite number.
  *
- * `ZSurveySliderElement` declares `range.min`, `range.max` and `step` as `z.number().finite()`, so a
- * transiently empty field ("" -> NaN) or an overflowing entry ("1e999" -> Infinity) must never reach the
- * draft: both would fail the schema and every downstream calculation — thumb position, grid alignment,
- * summary average — would evaluate to NaN. `Number.parseFloat` is used rather than `Number` because
- * `Number("")` is `0`, which would silently rewrite a cleared field to zero, and rather than `parseInt`
- * because the step may legitimately be a decimal such as `0.5`.
- *
- * Returning `null` lets the caller bail out without writing, so the controlled input simply snaps back
- * to the value already stored on the element.
+ * `Number.parseFloat` is used rather than `Number` because `Number("")` is `0`, which would silently
+ * rewrite a cleared field to zero, and rather than `parseInt` because the step may legitimately be a
+ * decimal such as `0.5`. `null` tells the caller not to write, leaving the value already stored on the
+ * element in place.
  */
 const readFiniteNumber = (rawValue: string): number | null => {
   const parsed = Number.parseFloat(rawValue);
@@ -59,6 +54,15 @@ export const SliderElementForm = ({
   const { t } = useTranslation();
   const surveyLanguageCodes = extractLanguageCodes(localSurvey.languages);
   const [parent] = useAutoAnimate();
+
+  // DOM ids for the three numeric fields, scoped to the element so several slider cards can be open at
+  // once. A survey may hold any number of sliders, and a document-wide id such as "rangeMin" would repeat
+  // on every card: the browser resolves a duplicate id to the FIRST match, so a later card's label would
+  // focus - and a screen reader would announce - the first card's input. `element.id` is unique per element
+  // within a survey, which is why the show-value toggle below already scopes its own id the same way.
+  const rangeMinId = `${element.id}-range-min`;
+  const rangeMaxId = `${element.id}-range-max`;
+  const stepId = `${element.id}-step`;
 
   return (
     <form>
@@ -127,11 +131,11 @@ export const SliderElementForm = ({
         <div className="mt-3 flex justify-between gap-8">
           {/* Minimum bound — merged into the existing range object so the maximum is preserved */}
           <div className="flex-1">
-            <Label htmlFor="rangeMin">{t("environments.surveys.edit.minimum")}</Label>
+            <Label htmlFor={rangeMinId}>{t("environments.surveys.edit.minimum")}</Label>
             <div className="mt-2">
               <Input
                 type="number"
-                id="rangeMin"
+                id={rangeMinId}
                 value={element.range.min}
                 onChange={(e) => {
                   const parsed = readFiniteNumber(e.target.value);
@@ -147,11 +151,11 @@ export const SliderElementForm = ({
 
           {/* Maximum bound — merged into the existing range object so the minimum is preserved */}
           <div className="flex-1">
-            <Label htmlFor="rangeMax">{t("environments.surveys.edit.maximum")}</Label>
+            <Label htmlFor={rangeMaxId}>{t("environments.surveys.edit.maximum")}</Label>
             <div className="mt-2">
               <Input
                 type="number"
-                id="rangeMax"
+                id={rangeMaxId}
                 value={element.range.max}
                 onChange={(e) => {
                   const parsed = readFiniteNumber(e.target.value);
@@ -169,11 +173,11 @@ export const SliderElementForm = ({
 
       {/* Step increment — a free step attribute keeps decimal increments such as 0.5 typeable */}
       <div className="mt-3">
-        <Label htmlFor="step">{t("environments.surveys.edit.step")}</Label>
+        <Label htmlFor={stepId}>{t("environments.surveys.edit.step")}</Label>
         <div className="mt-2">
           <Input
             type="number"
-            id="step"
+            id={stepId}
             value={element.step}
             onChange={(e) => {
               const parsed = readFiniteNumber(e.target.value);

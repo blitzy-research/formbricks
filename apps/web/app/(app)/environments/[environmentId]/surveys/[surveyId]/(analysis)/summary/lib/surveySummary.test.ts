@@ -4757,3 +4757,335 @@ describe("Payment question type tests", () => {
     expect(summary[0].skippedCount).toBe(2);
   });
 });
+
+describe("Slider question type tests", () => {
+  // The slider aggregation reports exactly five fields — type, element, responseCount, average and
+  // dismissed.count — because a continuous range has no fixed buckets to distribute answers into. Both
+  // helper types are derived from the symbols this file already imports, so the suite stays typed without
+  // widening anything to `any`.
+  type TSliderSummary = Extract<TSurveySummary["summary"][number], { type: TSurveyElementTypeEnum.Slider }>;
+  type TSliderElement = Extract<TSurveyElement, { type: TSurveyElementTypeEnum.Slider }>;
+  type TSummaryResponses = Parameters<typeof getElementSummary>[2];
+
+  const sliderElementId = "slider-q1";
+
+  const createSliderElement = (overrides: Partial<TSliderElement> = {}): TSliderElement => ({
+    id: sliderElementId,
+    type: TSurveyElementTypeEnum.Slider,
+    headline: { default: "How likely are you to recommend us?" },
+    required: true,
+    range: { min: 0, max: 100 },
+    step: 5,
+    lowerLabel: { default: "Not likely" },
+    upperLabel: { default: "Very likely" },
+    showValue: true,
+    ...overrides,
+  });
+
+  const createSurvey = (element: TSliderElement): TSurvey =>
+    ({
+      id: "survey-1",
+      blocks: [
+        {
+          id: "block1",
+          name: "Block 1",
+          elements: [element],
+        },
+      ],
+      questions: [],
+      languages: [],
+      welcomeCard: { enabled: false },
+    }) as unknown as TSurvey;
+
+  const createResponse = (
+    id: string,
+    data: TSummaryResponses[number]["data"],
+    ttc: TSummaryResponses[number]["ttc"] = {}
+  ): TSummaryResponses[number] => ({
+    id,
+    data,
+    updatedAt: new Date(),
+    contact: null,
+    contactAttributes: {},
+    language: null,
+    ttc,
+    finished: true,
+  });
+
+  const dropOff = [
+    { elementId: sliderElementId, impressions: 0, dropOffCount: 0, dropOffPercentage: 0 },
+  ] as unknown as TSurveySummary["dropOff"];
+
+  // Builds the survey around the given element, runs the real aggregation and narrows the single entry it
+  // produces. A missing entry would mean the aggregation switch has no slider case at all, since that
+  // switch has no default branch.
+  const summarizeSlider = async (
+    responses: TSummaryResponses,
+    element: TSliderElement = createSliderElement()
+  ): Promise<TSliderSummary> => {
+    const survey = createSurvey(element);
+    const summary = await getElementSummary(survey, getElementsFromBlocks(survey.blocks), responses, dropOff);
+
+    expect(summary).toHaveLength(1);
+    return summary[0] as TSliderSummary;
+  };
+
+  test("getQuestionSummary correctly processes Slider question with valid responses", async () => {
+    const summary = await summarizeSlider([
+      createResponse("response-1", { [sliderElementId]: 0 }),
+      createResponse("response-2", { [sliderElementId]: 50 }),
+      createResponse("response-3", { [sliderElementId]: 100 }),
+      createResponse("response-4", { [sliderElementId]: 25 }),
+    ]);
+
+    expect(summary.type).toBe(TSurveyElementTypeEnum.Slider);
+    expect(summary.element.id).toBe(sliderElementId);
+    expect(summary.responseCount).toBe(4);
+    // (0 + 50 + 100 + 25) / 4 = 43.75 — the zero is part of the average, not a skipped response.
+    expect(summary.average).toBe(43.75);
+    expect(summary.dismissed.count).toBe(0);
+  });
+
+  test("getQuestionSummary reports only the fields the Slider summary contract declares", async () => {
+    const summary = await summarizeSlider([createResponse("response-1", { [sliderElementId]: 40 })]);
+
+    expect(Object.keys(summary).sort()).toEqual(["average", "dismissed", "element", "responseCount", "type"]);
+  });
+
+  test("getQuestionSummary counts a Slider answered with zero as a response", async () => {
+    // The response also carries time on the element, so a truthiness test instead of a type test would
+    // misclassify this answer as a dismissal.
+    const summary = await summarizeSlider([
+      createResponse("response-1", { [sliderElementId]: 0 }, { [sliderElementId]: 4 }),
+    ]);
+
+    expect(summary.responseCount).toBe(1);
+    expect(summary.average).toBe(0);
+    expect(summary.dismissed.count).toBe(0);
+  });
+
+  test("getQuestionSummary ignores a non-numeric Slider answer", async () => {
+    const summary = await summarizeSlider([createResponse("response-1", { [sliderElementId]: "50" })]);
+
+    expect(summary.responseCount).toBe(0);
+    expect(summary.average).toBe(0);
+    expect(summary.dismissed.count).toBe(0);
+  });
+
+  test("getQuestionSummary handles Slider question with dismissed responses", async () => {
+    const summary = await summarizeSlider([
+      createResponse("response-1", { [sliderElementId]: 20 }, { [sliderElementId]: 3 }),
+      createResponse("response-2", {}, { [sliderElementId]: 2 }),
+      createResponse("response-3", {}, { [sliderElementId]: 4 }),
+    ]);
+
+    expect(summary.responseCount).toBe(1);
+    expect(summary.average).toBe(20);
+    expect(summary.dismissed.count).toBe(2);
+  });
+
+  test("getQuestionSummary does not count a Slider as dismissed without time on the element", async () => {
+    const summary = await summarizeSlider([
+      createResponse("response-1", {}, { [sliderElementId]: 0 }),
+      createResponse("response-2", {}, { "another-element": 5 }),
+    ]);
+
+    expect(summary.responseCount).toBe(0);
+    expect(summary.average).toBe(0);
+    expect(summary.dismissed.count).toBe(0);
+  });
+
+  test("getQuestionSummary handles Slider question with no responses", async () => {
+    const summary = await summarizeSlider([createResponse("response-1", { "another-element": "value" })]);
+
+    expect(summary.responseCount).toBe(0);
+    // Averaging nothing divides by zero, so the aggregation must normalise NaN to 0 — the summary card
+    // renders this value directly and a NaN would surface as a broken progress indicator.
+    expect(summary.average).toBe(0);
+    expect(Number.isNaN(summary.average)).toBe(false);
+    expect(summary.dismissed.count).toBe(0);
+  });
+
+  test("getQuestionSummary handles Slider question when the survey has no responses at all", async () => {
+    const summary = await summarizeSlider([]);
+
+    expect(summary.responseCount).toBe(0);
+    expect(summary.average).toBe(0);
+    expect(Number.isNaN(summary.average)).toBe(false);
+    expect(summary.dismissed.count).toBe(0);
+  });
+
+  test("getQuestionSummary averages raw values for a Slider range that does not start at zero", async () => {
+    const summary = await summarizeSlider(
+      [
+        createResponse("response-1", { [sliderElementId]: 10 }),
+        createResponse("response-2", { [sliderElementId]: 20 }),
+      ],
+      createSliderElement({ range: { min: 10, max: 50 } })
+    );
+
+    expect(summary.responseCount).toBe(2);
+    // The average is the plain mean of the submitted values, not a position within the range.
+    expect(summary.average).toBe(15);
+    expect(summary.element.range).toEqual({ min: 10, max: 50 });
+  });
+
+  test("getQuestionSummary rounds the Slider average to two decimals", async () => {
+    const summary = await summarizeSlider([
+      createResponse("response-1", { [sliderElementId]: 10 }),
+      createResponse("response-2", { [sliderElementId]: 10 }),
+      createResponse("response-3", { [sliderElementId]: 11 }),
+    ]);
+
+    expect(summary.responseCount).toBe(3);
+    // 31 / 3 = 10.333… rounded to two decimals.
+    expect(summary.average).toBe(10.33);
+  });
+});
+
+describe("Slider question type numerical stability tests", () => {
+  const buildSliderSurvey = (range: { min: number; max: number }, step: number) => {
+    const question = {
+      id: "slider-q1",
+      type: TSurveyElementTypeEnum.Slider,
+      headline: { default: "How satisfied are you?" },
+      required: true,
+      range,
+      step,
+      lowerLabel: { default: "Low" },
+      upperLabel: { default: "High" },
+      showValue: true,
+    };
+
+    return {
+      id: "survey-1",
+      blocks: [
+        {
+          id: "block1",
+          name: "Block 1",
+          elements: [question],
+        },
+      ],
+      questions: [],
+      languages: [],
+      welcomeCard: { enabled: false },
+    } as unknown as TSurvey;
+  };
+
+  const buildSliderResponses = (values: (number | undefined)[]) =>
+    values.map((value, index) => ({
+      id: `response-${index + 1}`,
+      data: value === undefined ? {} : { "slider-q1": value },
+      updatedAt: new Date(),
+      contact: null,
+      contactAttributes: {},
+      language: null,
+      // A response without a value only counts as a dismissal when it recorded time on the element.
+      ttc: value === undefined ? { "slider-q1": 4 } : {},
+      finished: true,
+    })) as any;
+
+  const buildDropOff = (impressions: number) =>
+    [
+      { elementId: "slider-q1", impressions, dropOffCount: 0, dropOffPercentage: 0 },
+    ] as unknown as TSurveySummary["dropOff"];
+
+  test("getElementSummary averages Slider answers and counts a zero answer as a response", async () => {
+    const survey = buildSliderSurvey({ min: 0, max: 100 }, 5);
+    const responses = buildSliderResponses([50, 0, 100]);
+
+    const summary: any = await getElementSummary(
+      survey,
+      getElementsFromBlocks(survey.blocks),
+      responses,
+      buildDropOff(3)
+    );
+
+    expect(summary).toHaveLength(1);
+    expect(summary[0].type).toBe(TSurveyElementTypeEnum.Slider);
+    // A Slider whose range starts at 0 and which was answered 0 is answered, never dismissed.
+    expect(summary[0].responseCount).toBe(3);
+    expect(summary[0].average).toBe(50);
+    expect(summary[0].dismissed.count).toBe(0);
+  });
+
+  test("getElementSummary handles Slider question with dismissed and no valid responses", async () => {
+    const survey = buildSliderSurvey({ min: 0, max: 100 }, 5);
+    const responses = buildSliderResponses([undefined, undefined]);
+
+    const summary: any = await getElementSummary(
+      survey,
+      getElementsFromBlocks(survey.blocks),
+      responses,
+      buildDropOff(2)
+    );
+
+    expect(summary).toHaveLength(1);
+    expect(summary[0].responseCount).toBe(0);
+    // An empty answer set reports 0 rather than the NaN a sum divided by zero would produce.
+    expect(summary[0].average).toBe(0);
+    expect(Number.isNaN(summary[0].average)).toBe(false);
+    expect(summary[0].dismissed.count).toBe(2);
+  });
+
+  test("getElementSummary keeps the Slider average finite for very large in-range answers", async () => {
+    // This configuration and these answers are schema-valid: the bounds and the step are finite, the
+    // span is finite, and every answer sits on the grid. A running sum, or a two-decimal rounding that
+    // multiplies by 100 first, would still overflow to Infinity here.
+    const largeValue = 9e306;
+    const survey = buildSliderSurvey({ min: 0, max: largeValue }, largeValue);
+    const responses = buildSliderResponses(new Array(30).fill(largeValue));
+
+    const summary: any = await getElementSummary(
+      survey,
+      getElementsFromBlocks(survey.blocks),
+      responses,
+      buildDropOff(30)
+    );
+
+    expect(summary).toHaveLength(1);
+    expect(summary[0].responseCount).toBe(30);
+    expect(Number.isFinite(summary[0].average)).toBe(true);
+    expect(summary[0].average).toBe(largeValue);
+  });
+
+  test("getElementSummary keeps a huge Slider average away from the x100 rounding helper", async () => {
+    // This suite mocks `convertFloatTo2Decimal` with a `toFixed`-based implementation that cannot
+    // overflow, so the production helper's `Math.round(num * 100) / 100` hazard is invisible through
+    // the returned value alone. Asserting that a magnitude beyond MAX_SAFE_INTEGER never reaches the
+    // helper guards it instead: at that scale a double carries no fractional digits, so rounding is a
+    // no-op whose only effect would be to overflow to Infinity.
+    const largeValue = 9e306;
+    const survey = buildSliderSurvey({ min: 0, max: largeValue }, largeValue);
+    const responses = buildSliderResponses([largeValue]);
+
+    const summary: any = await getElementSummary(
+      survey,
+      getElementsFromBlocks(survey.blocks),
+      responses,
+      buildDropOff(1)
+    );
+
+    expect(summary).toHaveLength(1);
+    expect(convertFloatTo2Decimal).not.toHaveBeenCalledWith(largeValue);
+    expect(Number.isFinite(summary[0].average)).toBe(true);
+    expect(summary[0].average).toBe(largeValue);
+  });
+
+  test("getElementSummary rounds the Slider average to two decimals within an offset range", async () => {
+    const survey = buildSliderSurvey({ min: 10, max: 50 }, 5);
+    const responses = buildSliderResponses([10, 15, 25]);
+
+    const summary: any = await getElementSummary(
+      survey,
+      getElementsFromBlocks(survey.blocks),
+      responses,
+      buildDropOff(3)
+    );
+
+    expect(summary).toHaveLength(1);
+    expect(summary[0].responseCount).toBe(3);
+    // (10 + 15 + 25) / 3 = 16.6666... -> 16.67
+    expect(summary[0].average).toBe(16.67);
+  });
+});

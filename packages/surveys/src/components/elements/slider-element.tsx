@@ -19,20 +19,17 @@ interface SliderElementProps {
 }
 
 /**
- * Runtime wrapper for the slider element: it resolves the element's internationalized strings for the
- * active language, records time to completion and writes the respondent's selection into the response
- * data keyed by the element id.
+ * Runtime wrapper for the slider element.
  *
- * The control itself lives in `@formbricks/survey-ui`, which owns the pointer and keyboard interaction
- * as well as the direction and array handling its underlying primitive needs, so nothing is adapted
- * here: `handleChange` receives a bare number and `dir` is forwarded unchanged.
+ * A selection is stored as a bare number. `value` is forwarded exactly as it arrives, never defaulted
+ * and never emitted on mount, so an untouched slider keeps no value at all - a slider answered with `0`
+ * would otherwise be indistinguishable from one that was skipped, which both the required check and the
+ * summary's dismissed count depend on.
  *
- * Two invariants of that division of labour matter to anything downstream. The selection is stored as a
- * bare number, which the response value contract already admits, so no persistence change is involved.
- * And `value` is forwarded exactly as it arrives, never defaulted and never emitted on mount, so an
- * untouched slider keeps no value at all - a slider answered with `0` would otherwise be
- * indistinguishable from one that was skipped, which both the required check and the summary's
- * dismissed count depend on.
+ * Time to completion is accounted per completed interaction, not per value change: `getUpdatedTtc` ADDS
+ * the duration it is handed, so charging the full elapsed time on every value a drag reports would bill
+ * the same seconds repeatedly. `handleChange` therefore only writes the response, and `handleValueCommit`
+ * closes one segment and opens the next when a drag or key press finishes.
  */
 export function SliderElement({
   element,
@@ -53,8 +50,15 @@ export function SliderElement({
 
   const handleChange = (sliderValue: number) => {
     onChange({ [element.id]: sliderValue });
-    const updatedTtcObj = getUpdatedTtc(ttc, element.id, performance.now() - startTime);
+  };
+
+  const handleValueCommit = () => {
+    // A single reading of the clock closes the finished segment and opens the next one, so the instant
+    // between the two is neither billed twice nor lost.
+    const now = performance.now();
+    const updatedTtcObj = getUpdatedTtc(ttc, element.id, now - startTime);
     setTtc(updatedTtcObj);
+    setStartTime(now);
   };
 
   const handleSubmit = (e: Event) => {
@@ -76,11 +80,13 @@ export function SliderElement({
         step={element.step}
         value={value}
         onChange={handleChange}
+        onValueCommit={handleValueCommit}
         lowerLabel={element.lowerLabel ? getLocalizedValue(element.lowerLabel, languageCode) : undefined}
         upperLabel={element.upperLabel ? getLocalizedValue(element.upperLabel, languageCode) : undefined}
         showValue={element.showValue}
         required={isRequired}
         requiredLabel={t("common.required")}
+        unansweredLabel={t("common.no_value_selected")}
         dir={dir}
         imageUrl={element.imageUrl}
         videoUrl={element.videoUrl}

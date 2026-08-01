@@ -371,8 +371,6 @@ describe("validators", () => {
     });
 
     test("should treat an explicit zero offset exactly like an omitted one", () => {
-      // `offset` is optional and defaults to 0, so both spellings must agree. A regression that dropped
-      // the parameter would still satisfy every omitted-offset case while breaking the explicit one.
       const onGrid = validators.stepMultipleOf.check(50, { step: 5, offset: 0 }, {} as TSurveyElement);
       expect(onGrid.valid).toBe(true);
 
@@ -389,8 +387,6 @@ describe("validators", () => {
     });
 
     test("should extend the grid below its own origin", () => {
-      // Alignment is measured from the origin in both directions, so the origin itself and the point one
-      // step below it both sit on the grid.
       const atOrigin = validators.stepMultipleOf.check(10, { step: 5, offset: 10 }, {} as TSurveyElement);
       expect(atOrigin.valid).toBe(true);
 
@@ -425,16 +421,14 @@ describe("validators", () => {
     });
 
     test("should return valid true when no value was submitted at all", () => {
-      // An unanswered grid question is the required check's business, not this rule's, so a single
-      // omission is never reported twice. `null` is deliberately not exercised: the response contract
-      // is `string | number | string[] | Record<string, string> | undefined`, so it cannot occur.
+      // Required validation owns empty values, so a single omission is never reported twice.
       const result = validators.stepMultipleOf.check(undefined, { step: 5 }, {} as TSurveyElement);
       expect(result.valid).toBe(true);
     });
 
     test("should return valid true for empty collections", () => {
-      // An empty array or object counts as unanswered and defers to the required check, whereas a
-      // populated one is a genuine type violation and is rejected by the case below.
+      // An empty collection is unanswered and defers to required validation, whereas a populated one is
+      // a non-number and fails.
       expect(validators.stepMultipleOf.check([], { step: 5 }, {} as TSurveyElement).valid).toBe(true);
       expect(validators.stepMultipleOf.check({}, { step: 5 }, {} as TSurveyElement).valid).toBe(true);
     });
@@ -484,6 +478,103 @@ describe("validators", () => {
         {} as TSurveyElement
       );
       expect(infinite.valid).toBe(false);
+    });
+
+    test("should reject a half-step value whose scaled form exceeds the safe integer range", () => {
+      // The regression this pins: scaling 1000000000000000.5 by ten exceeds Number.MAX_SAFE_INTEGER, and
+      // reconstructing the nearest grid point in double arithmetic lands back on the submitted value itself
+      // because the spacing between representable doubles at 1e15 is 0.125 - wider than the 0.2 step. A
+      // reconstruct-and-measure check therefore reports zero distance and accepts both values below, each of
+      // which is mathematically half a step off the grid. Exact decimal arithmetic is immune to it.
+      const halfStepUp = validators.stepMultipleOf.check(
+        1000000000000000.5,
+        { step: 0.2 },
+        {} as TSurveyElement
+      );
+      expect(halfStepUp.valid).toBe(false);
+
+      const halfStepDown = validators.stepMultipleOf.check(
+        1000000000000000.9,
+        { step: 0.2 },
+        {} as TSurveyElement
+      );
+      expect(halfStepDown.valid).toBe(false);
+    });
+
+    test("should still accept an aligned value whose scaled form exceeds the safe integer range", () => {
+      // The mirror image of the case above: exactness must not be bought by rejecting everything large.
+      // 1000000000000000.4 and 2251799813685248.5 are genuine grid points (5000000000000002 steps of 0.2 and
+      // 4503599627370497 steps of 0.5), yet both scale past Number.MAX_SAFE_INTEGER.
+      const onCoarseGrid = validators.stepMultipleOf.check(
+        1000000000000000.4,
+        { step: 0.2 },
+        {} as TSurveyElement
+      );
+      expect(onCoarseGrid.valid).toBe(true);
+
+      const onHalfUnitGrid = validators.stepMultipleOf.check(
+        2251799813685248.5,
+        { step: 0.5 },
+        {} as TSurveyElement
+      );
+      expect(onHalfUnitGrid.valid).toBe(true);
+
+      const offHalfUnitGrid = validators.stepMultipleOf.check(
+        2251799813685248.5,
+        { step: 0.2 },
+        {} as TSurveyElement
+      );
+      expect(offHalfUnitGrid.valid).toBe(false);
+    });
+
+    test("should decide the grid exactly on either side of Number.MAX_SAFE_INTEGER", () => {
+      // 9007199254740991 is odd, so it sits on a unit grid and off a step-2 grid; the next representable
+      // double above it is even and sits on both. The verdict must follow the arithmetic, not the magnitude.
+      expect(
+        validators.stepMultipleOf.check(Number.MAX_SAFE_INTEGER, { step: 1 }, {} as TSurveyElement).valid
+      ).toBe(true);
+      expect(
+        validators.stepMultipleOf.check(Number.MAX_SAFE_INTEGER, { step: 2 }, {} as TSurveyElement).valid
+      ).toBe(false);
+      expect(
+        validators.stepMultipleOf.check(Number.MAX_SAFE_INTEGER + 1, { step: 2 }, {} as TSurveyElement).valid
+      ).toBe(true);
+
+      // A hundredth-scale grid whose scaled operands straddle the same ceiling: 90071992547409.92 scales to
+      // 9007199254740992, one past Number.MAX_SAFE_INTEGER, and is two hundredths off a 0.05 grid. Note the
+      // representation allowance at this magnitude is about 0.16 - wider than the step itself - so only the
+      // cap at a millionth of the step keeps this rejection correct.
+      expect(
+        validators.stepMultipleOf.check(90071992547409.9, { step: 0.05 }, {} as TSurveyElement).valid
+      ).toBe(true);
+      expect(
+        validators.stepMultipleOf.check(90071992547409.92, { step: 0.05 }, {} as TSurveyElement).valid
+      ).toBe(false);
+    });
+
+    test("should forgive the representation error a client's own arithmetic introduces", () => {
+      // `0.1 + 0.2` and `3 * 0.1` both evaluate to 0.30000000000000004, one unit in the last place away
+      // from the third point of a 0.1 grid. A respondent's client that computes `min + n * step` produces
+      // exactly this, so it counts as on-grid - while 0.35, five thousand million million times further
+      // out, does not.
+      expect(validators.stepMultipleOf.check(0.1 + 0.2, { step: 0.1 }, {} as TSurveyElement).valid).toBe(
+        true
+      );
+      expect(validators.stepMultipleOf.check(0.35, { step: 0.1 }, {} as TSurveyElement).valid).toBe(false);
+    });
+
+    test("should fail closed on operands too small to be scaled exactly", () => {
+      // A denormal cannot be restated on any usable decimal scale, and it is off every practical grid
+      // anyway, so it is rejected rather than guessed at.
+      const denormal = validators.stepMultipleOf.check(Number.MIN_VALUE, { step: 5 }, {} as TSurveyElement);
+      expect(denormal.valid).toBe(false);
+    });
+
+    test("should not let an enormous step buy an enormous tolerance", () => {
+      // The residual allowance is capped by a fraction of the step, but it is measured against the value's
+      // own magnitude - so 0.5 is not "close enough" to the origin of a 1e21 grid.
+      const result = validators.stepMultipleOf.check(0.5, { step: 1e21 }, {} as TSurveyElement);
+      expect(result.valid).toBe(false);
     });
 
     test("should return correct error message with the step interpolated", () => {

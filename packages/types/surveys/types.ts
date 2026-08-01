@@ -4343,7 +4343,11 @@ export const ZSurveyElementSummarySlider = z.object({
   type: z.literal(TSurveyElementTypeEnum.Slider),
   element: ZSurveySliderElement,
   responseCount: z.number(),
-  average: z.number(),
+  // `.finite()` mirrors the bounds and step of `ZSurveySliderElement`: a Slider's range is
+  // author-configured, so an aggregate computed over very large yet individually valid answers must
+  // still be a real number. Declaring the aggregation's finiteness here makes it a contract rather
+  // than an assumption of whichever component renders the value.
+  average: z.number().finite(),
   dismissed: z.object({
     count: z.number(),
   }),

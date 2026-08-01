@@ -18,6 +18,18 @@ const defaultProps = {
   onChange: vi.fn(),
 };
 
+// Independent grid check, deliberately written the way the shared response validator decides grid
+// membership rather than by reusing the component's own arithmetic: value, origin and step are scaled to
+// integers by their shared decimal scale and compared with integer remainders, because `%` is unusable on
+// decimals - `(0.9 - 0) % 0.3` evaluates to 0.29999999999999993.
+const isOnGrid = (value: number, min: number, step: number): boolean => {
+  const decimals = Math.max(
+    ...[value, min, step].map((operand) => (String(operand).split(".")[1] ?? "").length)
+  );
+  const scale = 10 ** decimals;
+  return (Math.round(value * scale) - Math.round(min * scale)) % Math.round(step * scale) === 0;
+};
+
 // Locates the primitive's root - the element a track press lands on. It carries no role of its own, so it
 // is reached through its data-slot hook, and a missing root fails loudly instead of being asserted away.
 const getSliderRoot = (container: HTMLElement): Element => {
@@ -30,14 +42,6 @@ const getSliderRoot = (container: HTMLElement): Element => {
 
 // ===========================================================================
 // Slider component tests
-//
-// Documented deviation from AGENTS.md §Testing Guidelines, which asks that
-// `.tsx` components be left to Playwright: this directory's own convention
-// wins, because both of the most recent element additions ship a colocated
-// component spec here, `vite.config.mts` deliberately collects `.tsx` specs
-// and aliases React to a single copy so they run, and no Playwright spec
-// covers these components. No end-to-end spec is added, matching both prior
-// element additions.
 // ===========================================================================
 
 describe("Slider", () => {
@@ -235,6 +239,113 @@ describe("Slider", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Grid alignment
+  //
+  // The primitive rounds a movement to the nearest step and then clamps the
+  // result into [min, max], so a span that is not a whole number of steps lets
+  // that clamp land between grid points: 0 to 100 by 40 reports 100 while the
+  // grid is 0, 40 and 80. The shared response validator rejects such a value
+  // because (100 - 0) / 40 is not an integer, so the control must reposition
+  // every emitted value onto the grid before it reaches the response.
+  // -------------------------------------------------------------------------
+
+  test("emits the last grid point rather than the maximum on End when the span is not divisible", () => {
+    render(<Slider {...defaultProps} step={40} />);
+    fireEvent.keyDown(screen.getByRole("slider"), { key: "End" });
+    expect(defaultProps.onChange).toHaveBeenCalledWith(80);
+    expect(defaultProps.onChange).not.toHaveBeenCalledWith(100);
+  });
+
+  test("emits the last grid point rather than the maximum on a page-key jump", () => {
+    render(<Slider {...defaultProps} step={40} />);
+    fireEvent.keyDown(screen.getByRole("slider"), { key: "PageUp" });
+    expect(defaultProps.onChange).toHaveBeenCalledWith(80);
+    expect(defaultProps.onChange).not.toHaveBeenCalledWith(100);
+  });
+
+  test("holds an arrow key at the last grid point instead of stepping past it", () => {
+    render(<Slider {...defaultProps} step={40} value={80} />);
+    fireEvent.keyDown(screen.getByRole("slider"), { key: "ArrowRight" });
+    // The clamped value maps back onto the grid point already held, so the response is left alone
+    expect(defaultProps.onChange).not.toHaveBeenCalledWith(100);
+    for (const [emitted] of defaultProps.onChange.mock.calls) {
+      expect(emitted).toBe(80);
+    }
+  });
+
+  test("emits the last grid point when a pointer press lands at the maximum", () => {
+    const { container } = render(<Slider {...defaultProps} step={40} />);
+    const root = getSliderRoot(container);
+    // The environment reports a zero-sized rect, so the primitive's pointer arithmetic needs a real one
+    // before a press at the far right can resolve to the maximum
+    vi.spyOn(root, "getBoundingClientRect").mockReturnValue({
+      width: 100,
+      height: 8,
+      left: 0,
+      top: 0,
+      right: 100,
+      bottom: 8,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    fireEvent.pointerDown(root, { pointerId: 1, clientX: 100 });
+    fireEvent.pointerUp(root, { pointerId: 1, clientX: 100 });
+    expect(defaultProps.onChange).toHaveBeenCalledWith(80);
+    expect(defaultProps.onChange).not.toHaveBeenCalledWith(100);
+  });
+
+  test("measures grid alignment from the minimum rather than from zero", () => {
+    // Grid 10, 25, 40 — the span of 40 is not a whole number of 15s, so End resolves to 40, not to 50
+    render(<Slider {...defaultProps} min={10} max={50} step={15} />);
+    fireEvent.keyDown(screen.getByRole("slider"), { key: "End" });
+    expect(defaultProps.onChange).toHaveBeenCalledWith(40);
+    expect(defaultProps.onChange).not.toHaveBeenCalledWith(50);
+  });
+
+  test("still reaches the maximum when the span is a whole number of steps", () => {
+    render(<Slider {...defaultProps} min={10} max={50} step={10} />);
+    fireEvent.keyDown(screen.getByRole("slider"), { key: "End" });
+    expect(defaultProps.onChange).toHaveBeenCalledWith(50);
+  });
+
+  test("emits a clean decimal grid point rather than a floating-point artefact", () => {
+    render(<Slider {...defaultProps} min={0} max={1} step={0.1} value={0.2} />);
+    fireEvent.keyDown(screen.getByRole("slider"), { key: "ArrowRight" });
+    // 0.2 + 0.1 evaluates to 0.30000000000000004 in binary floating point
+    expect(defaultProps.onChange).toHaveBeenCalledWith(0.3);
+  });
+
+  test("reaches a decimal maximum the step divides only within floating-point tolerance", () => {
+    // 0.3 / 0.1 evaluates to 2.9999999999999996, which must not cost the respondent the top of the range
+    render(<Slider {...defaultProps} min={0} max={0.3} step={0.1} />);
+    fireEvent.keyDown(screen.getByRole("slider"), { key: "End" });
+    expect(defaultProps.onChange).toHaveBeenCalledWith(0.3);
+  });
+
+  test.each([
+    ["a span that is not divisible by the step", 0, 100, 40],
+    ["a step that leaves a remainder below a whole step", 0, 100, 30],
+    ["a grid anchored above zero", 10, 50, 15],
+    ["a decimal grid", 0, 1, 0.3],
+    ["a grid crossing zero", -10, 10, 7],
+  ])("only ever emits an in-range, on-grid value for %s", (_label, min, max, step) => {
+    render(<Slider {...defaultProps} min={min} max={max} step={step} />);
+    const thumb = screen.getByRole("slider");
+    for (const key of ["End", "PageUp", "ArrowRight", "ArrowUp", "Home", "ArrowLeft", "PageDown"]) {
+      fireEvent.keyDown(thumb, { key });
+      fireEvent.keyUp(thumb, { key });
+    }
+    expect(defaultProps.onChange).toHaveBeenCalled();
+    const emitted = defaultProps.onChange.mock.calls.map((call) => Number(call[0]));
+    for (const value of emitted) {
+      expect(value).toBeGreaterThanOrEqual(min);
+      expect(value).toBeLessThanOrEqual(max);
+      expect(isOnGrid(value, min, step)).toBe(true);
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // Selecting the minimum from the unanswered state
   //
   // An unanswered control parks its thumb at `min`, and the primitive reports a
@@ -350,13 +461,108 @@ describe("Slider", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Interaction completion
+  //
+  // Live movement reports through onChange, which fires continuously while a
+  // drag or a held key runs. onValueCommit reports the finished interaction
+  // once, which is what lets a consumer measure interaction time without
+  // counting the same stretch of it repeatedly.
+  // -------------------------------------------------------------------------
+
+  test("reports a finished key interaction once, with the value it settled on", () => {
+    const onValueCommit = vi.fn();
+    render(<Slider {...defaultProps} value={50} onValueCommit={onValueCommit} />);
+    const thumb = screen.getByRole("slider");
+    fireEvent.keyDown(thumb, { key: "ArrowRight" });
+    fireEvent.keyUp(thumb, { key: "ArrowRight" });
+    expect(onValueCommit).toHaveBeenCalledTimes(1);
+    expect(onValueCommit).toHaveBeenCalledWith(55);
+  });
+
+  test("reports one completion however many changes the interaction produced", () => {
+    const onValueCommit = vi.fn();
+    render(<Slider {...defaultProps} value={50} onValueCommit={onValueCommit} />);
+    const thumb = screen.getByRole("slider");
+    // A held key repeats its keydown without an intervening keyup
+    fireEvent.keyDown(thumb, { key: "ArrowRight" });
+    fireEvent.keyDown(thumb, { key: "ArrowRight" });
+    fireEvent.keyDown(thumb, { key: "ArrowRight" });
+    fireEvent.keyUp(thumb, { key: "ArrowRight" });
+    expect(defaultProps.onChange.mock.calls.length).toBeGreaterThan(1);
+    expect(onValueCommit).toHaveBeenCalledTimes(1);
+  });
+
+  test("reports a finished pointer interaction once", () => {
+    const onValueCommit = vi.fn();
+    const { container } = render(<Slider {...defaultProps} onValueCommit={onValueCommit} />);
+    const root = getSliderRoot(container);
+    fireEvent.pointerDown(root, { pointerId: 1 });
+    fireEvent.pointerUp(root, { pointerId: 1 });
+    // The recovered parked minimum is a completed interaction too
+    expect(onValueCommit).toHaveBeenCalledTimes(1);
+    expect(onValueCommit).toHaveBeenCalledWith(0);
+  });
+
+  test("reports the repositioned grid point rather than the value the primitive clamped", () => {
+    const onValueCommit = vi.fn();
+    render(<Slider {...defaultProps} step={40} onValueCommit={onValueCommit} />);
+    const thumb = screen.getByRole("slider");
+    fireEvent.keyDown(thumb, { key: "End" });
+    fireEvent.keyUp(thumb, { key: "End" });
+    expect(onValueCommit).toHaveBeenCalledTimes(1);
+    expect(onValueCommit).toHaveBeenCalledWith(80);
+  });
+
+  test("reports nothing for an interaction that produced no value", () => {
+    const onValueCommit = vi.fn();
+    const { container } = render(<Slider {...defaultProps} value={0} onValueCommit={onValueCommit} />);
+    const root = getSliderRoot(container);
+    fireEvent.pointerDown(root, { pointerId: 1 });
+    fireEvent.pointerUp(root, { pointerId: 1 });
+    expect(defaultProps.onChange).not.toHaveBeenCalled();
+    expect(onValueCommit).not.toHaveBeenCalled();
+  });
+
+  test("reports nothing for a key the control does not act on", () => {
+    const onValueCommit = vi.fn();
+    render(<Slider {...defaultProps} value={50} onValueCommit={onValueCommit} />);
+    const thumb = screen.getByRole("slider");
+    fireEvent.keyDown(thumb, { key: "Tab" });
+    fireEvent.keyUp(thumb, { key: "Tab" });
+    expect(onValueCommit).not.toHaveBeenCalled();
+  });
+
+  test("reports nothing while disabled", () => {
+    const onValueCommit = vi.fn();
+    const { container } = render(<Slider {...defaultProps} onValueCommit={onValueCommit} disabled />);
+    const root = getSliderRoot(container);
+    const thumb = screen.getByRole("slider");
+    fireEvent.pointerDown(root, { pointerId: 1 });
+    fireEvent.pointerUp(root, { pointerId: 1 });
+    fireEvent.keyDown(thumb, { key: "End" });
+    fireEvent.keyUp(thumb, { key: "End" });
+    expect(onValueCommit).not.toHaveBeenCalled();
+  });
+
+  test("starts a new completion for each interaction", () => {
+    const onValueCommit = vi.fn();
+    render(<Slider {...defaultProps} value={50} onValueCommit={onValueCommit} />);
+    const thumb = screen.getByRole("slider");
+    fireEvent.keyDown(thumb, { key: "ArrowRight" });
+    fireEvent.keyUp(thumb, { key: "ArrowRight" });
+    fireEvent.keyDown(thumb, { key: "ArrowLeft" });
+    fireEvent.keyUp(thumb, { key: "ArrowLeft" });
+    expect(onValueCommit).toHaveBeenCalledTimes(2);
+    expect(onValueCommit).toHaveBeenNthCalledWith(1, 55);
+    expect(onValueCommit).toHaveBeenNthCalledWith(2, 45);
+  });
+
+  // -------------------------------------------------------------------------
   // Disabled state tests
   // -------------------------------------------------------------------------
 
   test("does not call onChange when disabled", () => {
     render(<Slider {...defaultProps} value={50} disabled />);
-    // The change handler short-circuits on `disabled`, so no key press can
-    // move the response value
     fireEvent.keyDown(screen.getByRole("slider"), { key: "ArrowRight" });
     expect(defaultProps.onChange).not.toHaveBeenCalled();
   });
@@ -504,13 +710,18 @@ describe("Slider", () => {
 
   test("shows required indicator when required is true", () => {
     render(<Slider {...defaultProps} required />);
-    // ElementHeader renders the default requiredLabel "Required" when required is true
-    expect(screen.getByText("Required")).toBeInTheDocument();
+    // The label appears twice: the marker ElementHeader renders visually with the default requiredLabel
+    // "Required", and the description the role-bearing control points at
+    const markers = screen.getAllByText("Required");
+    expect(markers).toHaveLength(2);
+    expect(markers.some((marker) => !marker.classList.contains("sr-only"))).toBe(true);
   });
 
   test("shows a custom required label when provided", () => {
     render(<Slider {...defaultProps} required requiredLabel="Obligatorio" />);
-    expect(screen.getByText("Obligatorio")).toBeInTheDocument();
+    const markers = screen.getAllByText("Obligatorio");
+    expect(markers).toHaveLength(2);
+    expect(markers.some((marker) => !marker.classList.contains("sr-only"))).toBe(true);
   });
 
   test("does not show the required indicator by default", () => {
@@ -549,8 +760,28 @@ describe("Slider", () => {
     render(<Slider {...defaultProps} required />);
     const thumb = screen.getByRole("slider");
     expect(thumb).not.toHaveAttribute("aria-required");
-    // Required-ness is carried by the marker the header renders instead
-    expect(screen.getByText("Required")).toBeInTheDocument();
+    // Required-ness reaches the control as a description instead, so it is still communicated
+    // programmatically rather than only visually
+    expect(thumb).toHaveAttribute("aria-describedby", "test-slider-input-required");
+  });
+
+  test("describes the required state on the role-bearing control", () => {
+    render(<Slider {...defaultProps} required />);
+    const description = document.getElementById("test-slider-input-required");
+    expect(description).not.toBeNull();
+    expect(description).toHaveTextContent("Required");
+    // The description exists for assistive technology only: the header already shows the marker
+    expect(description).toHaveClass("sr-only");
+  });
+
+  test("describes a custom required label", () => {
+    render(<Slider {...defaultProps} required requiredLabel="Obligatorio" />);
+    expect(document.getElementById("test-slider-input-required")).toHaveTextContent("Obligatorio");
+  });
+
+  test("renders no required description when the element is optional", () => {
+    render(<Slider {...defaultProps} />);
+    expect(document.getElementById("test-slider-input-required")).toBeNull();
   });
 
   test("marks the control invalid and points it at the error message", () => {
@@ -563,12 +794,78 @@ describe("Slider", () => {
     expect(description).toHaveTextContent("Please pick a value");
   });
 
+  test("combines the required and error descriptions in reading order", () => {
+    render(<Slider {...defaultProps} required errorMessage="Please pick a value" />);
+    expect(screen.getByRole("slider")).toHaveAttribute(
+      "aria-describedby",
+      "test-slider-input-required test-slider-input-error"
+    );
+  });
+
   test("reports a valid control and describes nothing when there is no error", () => {
     render(<Slider {...defaultProps} />);
     const thumb = screen.getByRole("slider");
     expect(thumb).toHaveAttribute("aria-invalid", "false");
     expect(thumb).not.toHaveAttribute("aria-describedby");
     expect(document.getElementById("test-slider-input-error")).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // Unanswered announcement
+  //
+  // The primitive parks the thumb at the minimum while the response value is
+  // undefined, so `aria-valuenow` alone reads exactly like a slider genuinely
+  // answered with the minimum. `aria-valuetext` is what keeps the two states
+  // distinguishable for a screen-reader user, and it is localized by the caller.
+  // -------------------------------------------------------------------------
+
+  test("announces an unanswered control instead of the minimum it parks on", () => {
+    render(<Slider {...defaultProps} />);
+    const thumb = screen.getByRole("slider");
+    expect(thumb).toHaveAttribute("aria-valuenow", "0");
+    expect(thumb).toHaveAttribute("aria-valuetext", "No value selected");
+  });
+
+  test("announces the caller's unanswered label", () => {
+    render(<Slider {...defaultProps} unansweredLabel="Kein Wert ausgewählt" />);
+    expect(screen.getByRole("slider")).toHaveAttribute("aria-valuetext", "Kein Wert ausgewählt");
+  });
+
+  test("announces a value answered with the minimum as an answer", () => {
+    render(<Slider {...defaultProps} value={0} />);
+    const thumb = screen.getByRole("slider");
+    expect(thumb).toHaveAttribute("aria-valuenow", "0");
+    expect(thumb).not.toHaveAttribute("aria-valuetext");
+  });
+
+  test("announces a value answered anywhere else as an answer", () => {
+    render(<Slider {...defaultProps} value={50} />);
+    const thumb = screen.getByRole("slider");
+    expect(thumb).toHaveAttribute("aria-valuenow", "50");
+    expect(thumb).not.toHaveAttribute("aria-valuetext");
+  });
+
+  test("announces required and unanswered together", () => {
+    render(<Slider {...defaultProps} required />);
+    const thumb = screen.getByRole("slider");
+    expect(thumb).toHaveAttribute("aria-valuetext", "No value selected");
+    expect(thumb).toHaveAttribute("aria-describedby", "test-slider-input-required");
+  });
+
+  test("announces required and answered-at-minimum as an answer that is still required", () => {
+    render(<Slider {...defaultProps} required value={0} />);
+    const thumb = screen.getByRole("slider");
+    expect(thumb).toHaveAttribute("aria-valuenow", "0");
+    expect(thumb).not.toHaveAttribute("aria-valuetext");
+    expect(thumb).toHaveAttribute("aria-describedby", "test-slider-input-required");
+  });
+
+  test.each([
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["NaN", Number.NaN],
+  ])("announces a %s value as unanswered", (_label, value) => {
+    render(<Slider {...defaultProps} value={value} />);
+    expect(screen.getByRole("slider")).toHaveAttribute("aria-valuetext", "No value selected");
   });
 
   // -------------------------------------------------------------------------

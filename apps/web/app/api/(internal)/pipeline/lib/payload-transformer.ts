@@ -73,13 +73,67 @@ const buildDefinitionFields = (survey: TSurvey): TTypeformFieldDefinition[] => {
 };
 
 /**
- * Transforms a single response data value into a Typeform-compatible answer object.
- * Returns null if the response value is undefined/null (question was not answered)
- * or if the element type has no known mapping.
+ * Element types whose stored answer has historically been tolerated as a numeric string.
  *
- * Handles all 17 element types including:
+ * These three predate the slider and `computeScore` already parses a stored `"5"` for them, so the same
+ * tolerance is preserved here rather than silently narrowed - a response saved before this change must keep
+ * publishing the same answer. The slider is deliberately absent: its answer contract is exactly one number
+ * and the shared evaluator now rejects every other shape at ingress, so a string in a slider's slot can only
+ * be corruption.
+ */
+const NUMERIC_STRING_TOLERANT_TYPES: readonly string[] = [
+  TSurveyElementTypeEnum.Rating,
+  TSurveyElementTypeEnum.NPS,
+  TSurveyElementTypeEnum.OpinionScale,
+];
+
+/**
+ * Resolves a stored response value into the finite number a numeric answer requires, or null when no such
+ * number exists.
+ *
+ * Coercing with `Number()` was unsafe in both directions. It fabricated values the respondent never chose -
+ * `Number("")` and `Number([])` are both `0`, and for a slider whose range starts at 0 that is
+ * indistinguishable from a real answer - and it produced values that cannot be published, since `Number({})`
+ * is `NaN`, which has no JSON representation and is rejected outright by `ZTypeformCompatiblePayload`.
+ * Returning null lets the caller omit the answer instead, which is already how an unanswered question is
+ * represented, so a consumer sees "no answer" rather than a plausible wrong one. That also keeps this
+ * boundary in agreement with the shared response validator, whose emptiness contract counts `undefined`,
+ * `null`, `""`, `[]` and `{}` as unanswered, while `definition.fields` still advertises the field.
+ *
+ * @param elementType - The TSurveyElementTypeEnum value string, which decides string tolerance
+ * @param responseValue - The raw response value from response.data
+ * @returns The finite number to publish, or null when the value is not a publishable number
+ */
+const resolveNumericAnswer = (elementType: string, responseValue: unknown): number | null => {
+  if (typeof responseValue === "number") {
+    // Rejects NaN and +/-Infinity, neither of which a respondent can select or a payload can carry.
+    return Number.isFinite(responseValue) ? responseValue : null;
+  }
+
+  if (typeof responseValue === "string" && NUMERIC_STRING_TOLERANT_TYPES.includes(elementType)) {
+    const trimmed = responseValue.trim();
+    // An empty or whitespace-only string is an absent answer, not the zero `Number("")` would have produced.
+    if (trimmed === "") {
+      return null;
+    }
+
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  // Arrays, records, booleans and non-numeric strings have no numeric reading at all.
+  return null;
+};
+
+/**
+ * Transforms a single response data value into a Typeform-compatible answer object.
+ * Returns null if the response value is undefined/null (question was not answered),
+ * if the element type has no known mapping, or if a numeric answer cannot be resolved
+ * to a finite number.
+ *
+ * Handles all 18 element types including:
  * - text types: openText, cal, matrix, address, contactInfo
- * - number types: rating, opinionScale, nps
+ * - number types: rating, opinionScale, nps, slider
  * - boolean types: consent ("accepted" → true), cta ("clicked" → true)
  * - choice: multipleChoiceSingle, pictureSelection (single)
  * - choices: multipleChoiceMulti, ranking, pictureSelection (multi)
@@ -91,7 +145,7 @@ const buildDefinitionFields = (survey: TSurvey): TTypeformFieldDefinition[] => {
  * @param elementType - The TSurveyElementTypeEnum value string
  * @param responseValue - The raw response value from response.data
  * @param element - The full element object for accessing type-specific properties
- * @returns TTypeformAnswer or null if value is absent / type is unmapped
+ * @returns TTypeformAnswer or null if value is absent / type is unmapped / number is not finite
  */
 const transformAnswer = (
   elementId: string,
@@ -142,8 +196,15 @@ const transformAnswer = (
     }
 
     case "number": {
-      // Applies to: rating, opinionScale, nps
-      baseAnswer.number = typeof responseValue === "number" ? responseValue : Number(responseValue);
+      // Applies to: rating, opinionScale, nps, slider
+      const numericAnswer = resolveNumericAnswer(elementType, responseValue);
+      if (numericAnswer === null) {
+        // Omit the whole answer rather than publish a fabricated or unrepresentable one. This matches how an
+        // unanswered question is already reported, so no consumer has to distinguish a new failure mode.
+        return null;
+      }
+
+      baseAnswer.number = numericAnswer;
       break;
     }
 

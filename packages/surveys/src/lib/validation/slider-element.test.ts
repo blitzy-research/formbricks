@@ -2,7 +2,7 @@
 import type { TFunction } from "i18next";
 import { describe, expect, test, vi } from "vitest";
 import { ZResponseData } from "@formbricks/types/responses";
-import type { TResponseData } from "@formbricks/types/responses";
+import type { TResponseData, TResponseDataValue } from "@formbricks/types/responses";
 import {
   TSurveyElementTypeEnum,
   ZSurveyElements,
@@ -40,34 +40,10 @@ vi.mock("@/lib/i18n.config", () => ({
   },
 }));
 
-/**
- * Acceptance specification for the Slider element type.
- *
- * Each test below maps one-to-one onto one of the four acceptance criteria stated for the feature, in
- * order, so a failure names the criterion it breaks:
- *
- *   (a) a survey containing a slider configured min 0 / max 100 / step 5 round-trips through the schema;
- *   (b) a valid in-range, on-grid value of 50 validates and persists as a number;
- *   (c) an out-of-range value of 105 and an off-grid value of 7 are both rejected;
- *   (d) a required slider submitted with no value is rejected.
- *
- * The evaluator entrypoints exercised here are the same ones the respondent renderer and every response
- * route reach - the server wrapper in apps/web delegates straight to `validateBlockResponses` - so proving
- * the constraints here proves them for the server as well.
- *
- * `getTranslations` is mocked to echo its key, so every assertion on an error `message` asserts the
- * translation KEY rather than translated English text.
- */
 const SLIDER_ELEMENT_ID = "slider1";
 
 /**
- * Build the Slider fixture the acceptance criteria describe: a required slider spanning 0 to 100 on a
- * step-5 grid with both scale labels populated. A single configuration serves all four criteria, which
- * keeps them measured against exactly the element the criteria specify.
- *
- * `showValue` is deliberately absent from the literal so criterion (a) can prove the schema applies its
- * `true` default. The literal is cast rather than produced by the schema - a schema-produced fixture could
- * not then be used to exercise that schema - which is the established fixture idiom in this folder.
+ * `showValue` is deliberately omitted so the schema's `true` default is what gets verified.
  */
 const buildSliderElement = (): TSurveySliderElement =>
   ({
@@ -88,9 +64,7 @@ describe("slider element acceptance criteria", () => {
     const parsed = ZSurveySliderElement.safeParse(element);
 
     expect(parsed.success).toBe(true);
-    // Narrow the discriminated result. The assertion above has already failed the test on a rejection, so
-    // this throw is unreachable in practice; it exists so the round-trip assertions below run against a
-    // fully typed element instead of being silently skipped inside an `if (parsed.success)` block.
+    // The throw narrows `safeParse` so the assertions below run against a typed element.
     if (!parsed.success) {
       throw parsed.error;
     }
@@ -100,7 +74,6 @@ describe("slider element acceptance criteria", () => {
     expect(TSurveyElementTypeEnum.Slider).toBe("slider");
     expect(parsed.data.type).toBe(TSurveyElementTypeEnum.Slider);
 
-    // "Round-trips" means every configured value survives parsing unchanged.
     expect(parsed.data.range).toEqual({ min: 0, max: 100 });
     expect(parsed.data.step).toBe(5);
     expect(parsed.data.headline).toEqual({ default: "How likely are you to recommend us?" });
@@ -108,12 +81,9 @@ describe("slider element acceptance criteria", () => {
     expect(parsed.data.upperLabel).toEqual({ default: "High" });
     expect(parsed.data.required).toBe(true);
 
-    // ...and that the optional show-value flag defaults to true when omitted from the input.
     expect(parsed.data.showValue).toBe(true);
 
-    // A survey holds its elements as `ZSurveyElements` on every block, so parsing the element list is what
-    // proves a *survey* containing a slider is valid - it exercises the slider member appended to the
-    // element union rather than the element schema in isolation.
+    // Parsing the element list verifies the slider member registered in the survey-element union.
     const elements = ZSurveyElements.safeParse([element]);
 
     expect(elements.success).toBe(true);
@@ -133,13 +103,12 @@ describe("slider element acceptance criteria", () => {
     expect(result.valid).toBe(true);
     expect(result.errors).toHaveLength(0);
 
-    // The same value through the shared block entrypoint every response route reaches.
+    // The same value through the block-level evaluator that server response validation uses.
     const errorMap = validateBlockResponses([element], { [SLIDER_ELEMENT_ID]: 50 }, "en");
 
     expect(Object.keys(errorMap)).toHaveLength(0);
 
-    // "Persists as a number": the answer keeps its numeric type through the response-data contract, so no
-    // widening of `ZResponseDataValue` was needed to store a slider answer.
+    // "Persists as a number": the answer keeps its numeric type through the response-data contract.
     const responseData: TResponseData = { [SLIDER_ELEMENT_ID]: 50 };
 
     expect(typeof responseData[SLIDER_ELEMENT_ID]).toBe("number");
@@ -164,10 +133,7 @@ describe("slider element acceptance criteria", () => {
       "errors.max_value"
     );
 
-    // 7 sits inside the range but off the step-5 grid, so only the stepMultipleOf rule can reject it. The
-    // two values are asserted independently, and by rule identity rather than by `valid` alone: a bare
-    // rejection could be produced by the wrong mechanism, and a combined "one of them failed" assertion
-    // would let one of the two pass unnoticed.
+    // 7 is in range but off the step-5 grid, which isolates the stepMultipleOf rule.
     const offGrid = validateElementResponse(element, 7, "en");
 
     expect(offGrid.valid).toBe(false);
@@ -197,18 +163,156 @@ describe("slider element acceptance criteria", () => {
     expect(Object.keys(emptyStringMap)).toEqual([SLIDER_ELEMENT_ID]);
     expect(emptyStringMap[SLIDER_ELEMENT_ID][0].ruleId).toBe("required");
 
-    // A key present with an undefined value is equally unanswered.
     const undefinedMap = validateBlockResponses([element], { [SLIDER_ELEMENT_ID]: undefined }, "en");
 
     expect(Object.keys(undefinedMap)).toEqual([SLIDER_ELEMENT_ID]);
     expect(undefinedMap[SLIDER_ELEMENT_ID][0].ruleId).toBe("required");
 
-    // Supplementary, and the one place a naive emptiness check would silently break the feature: numeric 0
-    // is an ANSWER, not an empty value. This slider's minimum is 0, so 0 is its lowest selectable value and
-    // a required slider answered with it must validate.
+    // Numeric 0 is an answer, not an empty value, so it must pass when the minimum is 0.
     const zero = validateElementResponse(element, 0, "en");
 
     expect(zero.valid).toBe(true);
     expect(zero.errors).toHaveLength(0);
+  });
+});
+
+/**
+ * The four criteria above are stated in terms of one small, well-behaved configuration. They are satisfied
+ * by arithmetic that is only approximately correct and by an emptiness reading that is only approximately
+ * the slider's, so on their own they cannot distinguish a sound implementation from one that happens to
+ * agree on those inputs. The two suites below close that gap at the same entrypoints, extending criterion
+ * (c) to a grid the criteria's configuration never reaches and criterion (d) to the difference between an
+ * unanswered slider and one answered with the wrong shape.
+ */
+describe("slider grid rejection holds at magnitudes where floating point stops being exact", () => {
+  const HIGH_MAGNITUDE_ELEMENT_ID = "sliderHigh";
+
+  /**
+   * A range wide enough that its values scale past `Number.MAX_SAFE_INTEGER` on a 0.2 grid. Nothing about
+   * this configuration is unusual to an author - a range and a step, both finite, the step far smaller than
+   * the span - which is precisely why the grid check has to stay exact here rather than only near zero.
+   */
+  const buildHighMagnitudeElement = (): TSurveySliderElement =>
+    ({
+      id: HIGH_MAGNITUDE_ELEMENT_ID,
+      type: TSurveyElementTypeEnum.Slider,
+      headline: { default: "Pick a value" },
+      required: true,
+      range: { min: 0, max: 1000000000000001 },
+      step: 0.2,
+    }) as unknown as TSurveySliderElement;
+
+  test("the high-magnitude configuration is itself schema-valid, so the grid rule is the only gate", () => {
+    const parsed = ZSurveySliderElement.safeParse(buildHighMagnitudeElement());
+
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) {
+      throw parsed.error;
+    }
+
+    expect(parsed.data.range).toEqual({ min: 0, max: 1000000000000001 });
+    expect(parsed.data.step).toBe(0.2);
+  });
+
+  // Each value below is a whole half-step off the grid - the largest miss the grid admits, not a rounding
+  // artefact - and each is in range. Reconstructing the nearest grid point in double arithmetic returns the
+  // submitted value itself at this magnitude, measuring a drift of exactly zero and accepting it.
+  test.each([
+    ["a half-step above a grid point", 1000000000000000.5],
+    ["a half-step below the next grid point", 1000000000000000.9],
+  ])("should reject %s", (_label, value) => {
+    const element = buildHighMagnitudeElement();
+
+    const result = validateElementResponse(element, value, "en");
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.map((error) => error.ruleId)).toEqual(["__implicit_slider_step__"]);
+    expect(result.errors[0].ruleType).toBe("stepMultipleOf");
+    expect(result.errors[0].message).toBe("errors.step_multiple_of");
+  });
+
+  test("should still accept a genuinely aligned value at the same magnitude", () => {
+    const element = buildHighMagnitudeElement();
+
+    // 1000000000000000.4 is 5000000000000002 whole steps of 0.2 above the minimum.
+    const result = validateElementResponse(element, 1000000000000000.4, "en");
+
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  test("should reject through validateBlockResponses (the shared server path)", () => {
+    const element = buildHighMagnitudeElement();
+
+    const errorMap = validateBlockResponses(
+      [element],
+      { [HIGH_MAGNITUDE_ELEMENT_ID]: 1000000000000000.5 },
+      "en"
+    );
+
+    expect(Object.keys(errorMap)).toEqual([HIGH_MAGNITUDE_ELEMENT_ID]);
+    expect(errorMap[HIGH_MAGNITUDE_ELEMENT_ID].map((error) => error.ruleId)).toEqual([
+      "__implicit_slider_step__",
+    ]);
+  });
+});
+
+describe("slider answers of the wrong shape are rejected whether or not the element is required", () => {
+  const OPTIONAL_ELEMENT_ID = "sliderOptional";
+
+  /**
+   * The same 0-100 step-5 configuration the four criteria use, with `required` cleared. Criterion (d) fixes
+   * a required slider, where the required check catches an empty submission on its own; an optional slider
+   * is the case that has nothing else standing behind the shape check.
+   */
+  const buildOptionalElement = (): TSurveySliderElement =>
+    ({
+      id: OPTIONAL_ELEMENT_ID,
+      type: TSurveyElementTypeEnum.Slider,
+      headline: { default: "Pick a value" },
+      required: false,
+      range: { min: 0, max: 100 },
+      step: 5,
+    }) as unknown as TSurveySliderElement;
+
+  // `""`, `[]` and `{}` are shapes the generic emptiness helper reads as "no answer", which is the right
+  // reading for the text and choice contracts. A slider answer is a single number, so these are present
+  // values of the wrong type: they must be rejected rather than waved through as an unanswered optional.
+  test.each([
+    ["an empty string", ""],
+    ["an empty array", []],
+    ["an empty record", {}],
+  ] as [string, TResponseDataValue][])("should reject %s keyed for an optional slider", (_label, value) => {
+    const element = buildOptionalElement();
+
+    const result = validateElementResponse(element, value, "en");
+
+    expect(result.valid).toBe(false);
+    expect(result.errors[0].ruleId).toBe("sliderValueType");
+    expect(result.errors[0].message).toBe("errors.invalid_format");
+
+    // ...and through the shared block entrypoint every response route reaches, which is where a wrongly
+    // shaped answer would otherwise have been accepted and persisted.
+    const errorMap = validateBlockResponses([element], { [OPTIONAL_ELEMENT_ID]: value }, "en");
+
+    expect(Object.keys(errorMap)).toEqual([OPTIONAL_ELEMENT_ID]);
+    expect(errorMap[OPTIONAL_ELEMENT_ID][0].ruleId).toBe("sliderValueType");
+  });
+
+  test("should keep a genuinely unanswered optional slider valid", () => {
+    const element = buildOptionalElement();
+
+    // Absence, unlike an empty shape, is a legitimate submission for an optional element.
+    expect(validateElementResponse(element, undefined, "en").valid).toBe(true);
+    expect(
+      Object.keys(validateBlockResponses([element], { [OPTIONAL_ELEMENT_ID]: undefined }, "en"))
+    ).toEqual([]);
+  });
+
+  test("should accept a valid numeric answer for an optional slider", () => {
+    const result = validateElementResponse(buildOptionalElement(), 50, "en");
+
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
   });
 });

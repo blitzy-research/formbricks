@@ -1068,24 +1068,41 @@ export const getElementSummary = async (
       }
       case TSurveyElementTypeEnum.Slider: {
         let totalResponseCount = 0;
-        let totalValue = 0;
+        // The mean is updated in place instead of dividing a running sum at the end. A Slider's bounds
+        // are author-configured and only constrained to describe a finite span, so a sum over many
+        // large-magnitude answers can overflow to Infinity long before the division happens. An
+        // incremental mean keeps every intermediate value inside the answered range, because
+        // `answer - runningAverage` can never exceed that span.
+        let runningAverage = 0;
         let dismissed = 0;
 
         responses.forEach((response) => {
           const answer = response.data[element.id];
           if (typeof answer === "number") {
             totalResponseCount++;
-            totalValue += answer;
+            runningAverage += (answer - runningAverage) / totalResponseCount;
           } else if (response.ttc && response.ttc[element.id] > 0) {
             dismissed++;
           }
         });
 
+        // `convertFloatTo2Decimal` multiplies by 100 before rounding, which overflows to Infinity above
+        // roughly 1.79e306. Past MAX_SAFE_INTEGER a double carries no fractional digits at all, so
+        // skipping the rounding there is exact rather than a compromise.
+        const roundedAverage =
+          Math.abs(runningAverage) < Number.MAX_SAFE_INTEGER
+            ? convertFloatTo2Decimal(runningAverage)
+            : runningAverage;
+
         summary.push({
           type: element.type,
           element,
           responseCount: totalResponseCount,
-          average: convertFloatTo2Decimal(totalValue / totalResponseCount) || 0,
+          // Seeding the mean at 0 already reports 0 for an element with no numeric answers, so no NaN
+          // fallback is needed for the empty set. The finiteness check keeps the contract declared by
+          // `ZSurveyElementSummarySlider` (`average: z.number().finite()`) satisfied even for
+          // pathological legacy response data that the current bounds would no longer accept.
+          average: Number.isFinite(roundedAverage) ? roundedAverage : 0,
           dismissed: {
             count: dismissed,
           },

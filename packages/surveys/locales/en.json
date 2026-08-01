@@ -9,6 +9,7 @@
     "finish": "Finish",
     "language_switch": "Language switch",
     "next": "Next",
+    "no_value_selected": "No value selected",
     "open_in_new_tab": "Open in new tab",
     "people_responded": "{count, plural, one {1 person responded} other {{count} people responded}}",
     "please_retry_now_or_try_again_later": "Please retry now or try again later.",

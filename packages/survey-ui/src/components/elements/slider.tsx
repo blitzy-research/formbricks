@@ -12,6 +12,40 @@ import { cn } from "@/lib/utils";
  */
 const SLIDER_KEYS = ["ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp", "End", "Home", "PageDown", "PageUp"];
 
+/**
+ * Relative slack allowed when deciding whether a value already sits on the step grid. Binary floating point
+ * cannot hold most decimal steps exactly - `0.3 / 0.1` evaluates to 2.9999999999999996 - so grid membership
+ * is decided against a tolerance rather than against zero, the same way the shared response validator does
+ * before accepting an answer.
+ */
+const GRID_EPSILON = 1e-9;
+
+/**
+ * Ceiling for the decimal scale a reconstructed grid point is rounded back to. `toFixed` accepts 0 to 100
+ * places, and no realistic configuration needs more than this many.
+ */
+const MAX_GRID_DECIMALS = 20;
+
+/** Fallback announcement for an unanswered control, mirroring how `ElementHeader` defaults its own label. */
+const DEFAULT_UNANSWERED_LABEL = "No value selected";
+
+/** Fallback required marker, kept identical to the default `ElementHeader` applies. */
+const DEFAULT_REQUIRED_LABEL = "Required";
+
+/**
+ * Decimal places in a number's plain decimal form, or `null` when it is written in exponential form and so
+ * has no fixed decimal scale to round back to.
+ */
+const decimalPlaces = (value: number): number | null => {
+  const text = String(value);
+  if (text.includes("e") || text.includes("E")) {
+    return null;
+  }
+
+  const separator = text.indexOf(".");
+  return separator === -1 ? 0 : text.length - separator - 1;
+};
+
 interface SliderProps {
   /** Unique identifier for the element container */
   elementId: string;
@@ -31,6 +65,12 @@ interface SliderProps {
   value?: number;
   /** Callback function called when the value changes */
   onChange: (value: number) => void;
+  /**
+   * Callback function called once per completed interaction - a pointer release or a key release - with the
+   * value that interaction settled on. Live movement reports through `onChange`; this reports completion, so
+   * a consumer measuring interaction time counts each drag or keystroke exactly once.
+   */
+  onValueCommit?: (value: number) => void;
   /** Optional label for the lower end of the scale */
   lowerLabel?: string;
   /** Optional label for the upper end of the scale */
@@ -41,6 +81,11 @@ interface SliderProps {
   required?: boolean;
   /** Custom label for the required indicator */
   requiredLabel?: string;
+  /**
+   * Text announced in place of the numeric value while the element is unanswered, so assistive technology
+   * can tell an untouched control apart from one genuinely answered with the minimum
+   */
+  unansweredLabel?: string;
   /** Error message to display */
   errorMessage?: string;
   /** Text direction */
@@ -59,7 +104,12 @@ interface SliderProps {
  *
  * An unanswered control parks its thumb at `min` while the response value stays `undefined`, and the
  * primitive reports a change only when the next value differs from the one it holds. The pointer and key
- * handlers below close that gap so a respondent can select the minimum directly.
+ * handlers below close that gap so a respondent can select the minimum directly, and they report each
+ * finished interaction once through `onValueCommit`.
+ *
+ * Every emitted value is repositioned onto the grid of `step` anchored at `min`, because the primitive
+ * clamps to `max` after rounding and would otherwise hand a respondent a value the shared response
+ * validator rejects on a range whose span is not a whole number of steps.
  */
 function Slider({
   elementId,
@@ -71,11 +121,13 @@ function Slider({
   step,
   value,
   onChange,
+  onValueCommit,
   lowerLabel,
   upperLabel,
   showValue = true,
   required = false,
   requiredLabel,
+  unansweredLabel = DEFAULT_UNANSWERED_LABEL,
   errorMessage,
   dir = "auto",
   disabled = false,
@@ -98,19 +150,89 @@ function Slider({
   const span = safeMax - safeMin;
   const safeStep = Number.isFinite(step) && step > 0 ? Math.min(step, span) : span;
 
-  // Whether the interaction in progress has already produced a value. The primitive reports a change only
-  // when the next value differs from the one it holds, and an unanswered control parks its thumb at `min`,
-  // so a first press, a drag ending at the lower bound or a backward keystroke would all be swallowed and
-  // the respondent could never select the minimum directly - most visibly on a range that starts at `0`.
-  const hasEmittedRef = React.useRef(false);
+  // Highest whole number of steps that still fits inside the range, and therefore the last selectable grid
+  // point. A span that is not a whole multiple of the step - 0 to 100 by 40 - ends its grid at 80 rather
+  // than at `max`, which is what the emitted value is capped at. The tolerance keeps a span that only misses
+  // by floating-point noise, such as 0.3 by 0.1, reaching its true final point.
+  const spanSteps = span / safeStep;
+  const nearestSpanSteps = Math.round(spanSteps);
+  const maxSteps =
+    Math.abs(spanSteps - nearestSpanSteps) <= GRID_EPSILON * Math.max(1, nearestSpanSteps)
+      ? nearestSpanSteps
+      : Math.floor(spanSteps);
+
+  // Decimal scale shared by the grid's origin and its step. A reconstructed grid point is rounded back to it
+  // so three steps of 0.1 read 0.3 rather than 0.30000000000000004, exactly as the primitive rounds its own
+  // arithmetic. `null` means at least one operand is exponential and has no fixed scale to round to.
+  const minDecimals = decimalPlaces(safeMin);
+  const stepDecimals = decimalPlaces(safeStep);
+  const gridDecimals =
+    minDecimals === null || stepDecimals === null
+      ? null
+      : Math.min(Math.max(minDecimals, stepDecimals), MAX_GRID_DECIMALS);
+
+  // The grid point `steps` increments above the minimum, kept inside the configured bounds. Clamping is a
+  // floating-point safeguard only: `steps` never exceeds `maxSteps`, so it can only trim representation
+  // error, never a whole step.
+  const gridPoint = (steps: number): number => {
+    const raw = safeMin + steps * safeStep;
+    const rounded = gridDecimals === null ? raw : Number.parseFloat(raw.toFixed(gridDecimals));
+    return Math.min(Math.max(rounded, safeMin), safeMax);
+  };
+
+  /**
+   * Repositions a value the primitive reported onto the grid the response contract requires.
+   *
+   * The primitive rounds a movement to the nearest step and then clamps the result into `[min, max]`, so a
+   * range whose span is not a whole number of steps lets that clamp land between grid points: 0 to 100 by 40
+   * reports 100 from the End key, from an arrow key past 80 and from a press at the far right, while the grid
+   * is 0, 40 and 80. The shared validator rejects such an answer - `(100 - 0) / 40` is not an integer - so
+   * the control must never emit it. A value already on the grid, which is every value a divisible
+   * configuration produces, passes through untouched.
+   */
+  const normalizeToGrid = (candidate: number): number => {
+    const steps = (candidate - safeMin) / safeStep;
+    const nearestSteps = Math.round(steps);
+    const isOnGrid = Math.abs(steps - nearestSteps) <= GRID_EPSILON * Math.max(1, Math.abs(nearestSteps));
+    const boundedSteps = Math.min(Math.max(nearestSteps, 0), maxSteps);
+
+    if (isOnGrid && boundedSteps === nearestSteps) {
+      return candidate;
+    }
+
+    return gridPoint(boundedSteps);
+  };
+
+  // The value the interaction in progress has produced, or `null` while it has produced none. The primitive
+  // reports a change only when the next value differs from the one it holds, and an unanswered control parks
+  // its thumb at `min`, so a first press, a drag ending at the lower bound or a backward keystroke would all
+  // be swallowed and the respondent could never select the minimum directly - most visibly on a range that
+  // starts at `0`. Holding the value rather than a flag also lets the completion callback report what the
+  // interaction settled on.
+  const interactionValueRef = React.useRef<number | null>(null);
 
   // The primitive positions its thumb from a numeric array, so clamp a real answer into the configured
   // bounds and fall back to `min` when unanswered. The thumb fill below is what keeps that fallback
   // distinguishable from a slider genuinely answered with `min`.
   const trackValue = hasValue ? [Math.min(Math.max(value, safeMin), safeMax)] : [safeMin];
 
+  // Records what the interaction settled on, then reports it. The response value is only rewritten when it
+  // actually changes, because normalisation maps several reported positions onto the same grid point and
+  // re-announcing one would churn the response for no change - the interaction is still marked as having
+  // produced a value, so its completion is reported either way.
+  const emitValue = (next: number): void => {
+    interactionValueRef.current = next;
+
+    if (hasValue && next === value) {
+      return;
+    }
+
+    onChange(next);
+  };
+
   // Radix emits an array; this single-thumb control consumes the first value. Short-circuit while disabled,
-  // and re-check the emitted value because the response contract is a single finite number.
+  // re-check the emitted value because the response contract is a single finite number, and reposition it
+  // onto the step grid the shared validator enforces.
   const handleValueChange = (next: number[]): void => {
     if (disabled) {
       return;
@@ -121,29 +243,47 @@ function Slider({
       return;
     }
 
-    hasEmittedRef.current = true;
-    onChange(selected);
+    emitValue(normalizeToGrid(selected));
   };
 
   // Composed ahead of the primitive's own handler, so every interaction starts
-  // from a clean flag and only the press being released is ever inspected.
+  // from a clean slate and only the press being released is ever inspected.
   const beginInteraction = (): void => {
-    hasEmittedRef.current = false;
+    interactionValueRef.current = null;
   };
 
   // Recovers a swallowed selection: an interaction that ran to completion on an
   // unanswered control without producing a value is a request for the parked
-  // minimum, so emit it explicitly. The flag is what keeps a reported
-  // interaction from being emitted a second time, which is why the recovery is
-  // driven by what the primitive did rather than by which key was pressed — that
-  // keeps it correct in both text directions, where the primitive itself decides
-  // which arrow counts as backward.
+  // minimum, so emit it explicitly. `min` is the grid's origin, so it needs no
+  // normalisation. The recorded value is what keeps a reported interaction from
+  // being emitted a second time, which is why the recovery is driven by what the
+  // primitive did rather than by which key was pressed — that keeps it correct in
+  // both text directions, where the primitive itself decides which arrow counts
+  // as backward.
   const commitParkedMinimum = (): void => {
-    if (disabled || hasValue || hasEmittedRef.current) {
+    if (disabled || hasValue || interactionValueRef.current !== null) {
       return;
     }
-    hasEmittedRef.current = true;
-    onChange(safeMin);
+    emitValue(safeMin);
+  };
+
+  // Closes the interaction: recover the parked minimum if the primitive swallowed
+  // it, then report completion once with the value the interaction settled on and
+  // clear the slate. An interaction that produced nothing at all reports nothing,
+  // so a press that resolves to the value already held is not counted.
+  const finishInteraction = (): void => {
+    if (disabled) {
+      return;
+    }
+
+    commitParkedMinimum();
+
+    const settledValue = interactionValueRef.current;
+    interactionValueRef.current = null;
+
+    if (settledValue !== null) {
+      onValueCommit?.(settledValue);
+    }
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLSpanElement>): void => {
@@ -154,14 +294,31 @@ function Slider({
 
   const handleKeyUp = (event: React.KeyboardEvent<HTMLSpanElement>): void => {
     if (SLIDER_KEYS.includes(event.key)) {
-      commitParkedMinimum();
+      finishInteraction();
     }
   };
 
   // Ids derived from `inputId` so every relationship below is stable across
   // renders and unique to this element.
   const errorId = `${inputId}-error`;
+  const requiredId = `${inputId}-required`;
   const hasError = Boolean(errorMessage);
+
+  // ARIA does not define `aria-required` for the `slider` role, so required-ness reaches the control as a
+  // description instead. The ids are listed in reading order and only when their text is rendered, so the
+  // control describes the required state, the error, or both.
+  const descriptionIds: string[] = [];
+  if (required) {
+    descriptionIds.push(requiredId);
+  }
+  if (hasError) {
+    descriptionIds.push(errorId);
+  }
+  const describedBy = descriptionIds.length > 0 ? descriptionIds.join(" ") : undefined;
+
+  // Kept identical to the default `ElementHeader` applies, so the marker it renders and the description the
+  // control points at always read the same.
+  const resolvedRequiredLabel = requiredLabel ?? DEFAULT_REQUIRED_LABEL;
 
   return (
     <div className="w-full space-y-4" id={elementId} dir={dir}>
@@ -171,7 +328,7 @@ function Slider({
         headline={headline}
         description={description}
         required={required}
-        requiredLabel={requiredLabel}
+        requiredLabel={resolvedRequiredLabel}
         imageUrl={imageUrl}
         videoUrl={videoUrl}
       />
@@ -187,6 +344,16 @@ function Slider({
           <div id={errorId}>
             <ElementError errorMessage={errorMessage} dir={dir} />
           </div>
+        ) : null}
+
+        {/* Required state as an accessible description. The header already shows
+            this marker visually; this copy exists so the role-bearing control can
+            point at it, which is how a slider communicates required-ness - ARIA
+            defines no `aria-required` for the role. */}
+        {required ? (
+          <span className="sr-only" id={requiredId}>
+            {resolvedRequiredLabel}
+          </span>
         ) : null}
 
         {/* Selected-value readout. `output` is the semantic element for a
@@ -209,7 +376,7 @@ function Slider({
           value={trackValue}
           onValueChange={handleValueChange}
           onPointerDown={beginInteraction}
-          onPointerUp={commitParkedMinimum}
+          onPointerUp={finishInteraction}
           onKeyDown={handleKeyDown}
           onKeyUp={handleKeyUp}
           disabled={disabled}
@@ -227,20 +394,23 @@ function Slider({
             <SliderPrimitive.Range data-slot="slider-range" className="bg-brand absolute h-full" />
           </SliderPrimitive.Track>
           {/* The primitive puts `role="slider"` on the thumb, so the control's
-              identity, name and state all belong here rather than on the
+              identity, name, value and state all belong here rather than on the
               role-less root: `id` so the readout resolves to the element that
               owns the value, `aria-label` for the accessible name, `aria-disabled`
-              and `aria-invalid` for state, and `aria-describedby` so the error is
-              announced together with the value. `aria-required` is deliberately
-              absent, because ARIA does not define it for the `slider` role; the
-              required marker the header renders carries that instead. */}
+              and `aria-invalid` for state, `aria-describedby` so the required state
+              and the error are announced together with the value, and
+              `aria-valuetext` so an unanswered control does not announce the
+              minimum it parks on as if it were an answer. `aria-required` is
+              deliberately absent, because ARIA does not define it for the `slider`
+              role - the description above carries it instead. */}
           <SliderPrimitive.Thumb
             data-slot="slider-thumb"
             id={inputId}
             aria-label={headline}
             aria-disabled={disabled}
             aria-invalid={hasError}
-            aria-describedby={hasError ? errorId : undefined}
+            aria-describedby={describedBy}
+            aria-valuetext={hasValue ? undefined : unansweredLabel}
             className={cn(
               "border-brand focus-visible:ring-ring block h-5 w-5 rounded-full border-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2",
               hasValue ? "bg-brand" : "bg-input-bg",

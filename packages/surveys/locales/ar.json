@@ -9,6 +9,7 @@
     "finish": "إنهاء",
     "language_switch": "تبديل اللغة",
     "next": "التالي",
+    "no_value_selected": "لم يتم تحديد أي قيمة",
     "open_in_new_tab": "فتح في علامة تبويب جديدة",
     "people_responded": "{count, plural, one {شخص واحد استجاب} two {شخصان استجابا} few {{count} أشخاص استجابوا} many {{count} شخصًا استجابوا} other {{count} شخص استجابوا}}",
     "please_retry_now_or_try_again_later": "يرجى إعادة المحاولة الآن أو المحاولة مرة أخرى لاحقًا.",

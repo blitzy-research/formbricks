@@ -710,6 +710,13 @@ describe("validateElementResponse", () => {
       ["a record", { value: "50" }],
       ["NaN", Number.NaN],
       ["Infinity", Number.POSITIVE_INFINITY],
+      // The three rows below are values the generic emptiness helper classifies as "empty" because that is
+      // the right reading for the text and choice contracts. For this contract they are present values of
+      // the wrong type, and treating them as absent on an *optional* slider would skip the gate and every
+      // injected rule, persisting a non-numeric answer.
+      ["an empty string", ""],
+      ["an empty array", []],
+      ["an empty record", {}],
     ];
 
     test.each(wrongTypedValues)("should reject %s submitted for a slider", (_label, value) => {
@@ -772,6 +779,54 @@ describe("validateElementResponse", () => {
 
       expect(result.valid).toBe(true);
       expect(result.errors).toHaveLength(0);
+    });
+
+    // `null` is not part of `ZResponseDataValue`, but a JSON payload can carry it and the evaluator is
+    // reached directly by every response route, so absence must cover it too rather than falling through to
+    // the wrong-type branch and reporting a shape error for what is really a missing answer.
+    test("should treat an explicit null as absence rather than a wrong shape", () => {
+      const optional = validateElementResponse(
+        buildSliderElement(false),
+        null as unknown as TResponseDataValue,
+        "en"
+      );
+      expect(optional.valid).toBe(true);
+      expect(optional.errors).toHaveLength(0);
+
+      const required = validateElementResponse(
+        buildSliderElement(true),
+        null as unknown as TResponseDataValue,
+        "en"
+      );
+      expect(required.valid).toBe(false);
+      expect(required.errors.map((error) => error.ruleId)).toEqual(["required"]);
+    });
+
+    // The required check owns emptiness, so it must stay the single error for a required slider left
+    // unanswered - the shape gate is not allowed to pile a second complaint onto the same submission.
+    test.each([
+      ["an empty string", ""],
+      ["an empty array", []],
+      ["an empty record", {}],
+    ] as [string, TResponseDataValue][])(
+      "should report only the required error for a required slider keyed with %s",
+      (_label, value) => {
+        const result = validateElementResponse(buildSliderElement(true), value, "en");
+
+        expect(result.valid).toBe(false);
+        expect(result.errors.map((error) => error.ruleId)).toEqual(["required"]);
+      }
+    );
+
+    test("should reject an empty shape keyed for an optional slider through the shared server path", () => {
+      const elements: TSurveyElement[] = [buildSliderElement(false)];
+
+      for (const value of ["", [], {}] as TResponseDataValue[]) {
+        const errorMap = validateBlockResponses(elements, { slider1: value }, "en");
+
+        expect(Object.keys(errorMap)).toEqual(["slider1"]);
+        expect(errorMap.slider1[0].ruleId).toBe("sliderValueType");
+      }
     });
 
     test("should report the type error, not the required error, for a wrongly typed answer", () => {
@@ -883,7 +938,12 @@ describe("validateElementResponse", () => {
       expect(result.errors.map((error) => error.ruleId)).toEqual(["required"]);
     });
 
-    test("should not overwrite a rule the author already configured for the same type", () => {
+    // A slider carries no author-configurable rules: `APPLICABLE_RULES.slider` is empty and the element
+    // schema declares no `validation` field. A `validation` block on a slider therefore only ever arrives
+    // from a hand-crafted payload or a draft that bypassed the schema, and honouring it would let a caller
+    // replace the intrinsic bounds and grid with looser ones - or suppress them entirely - which is exactly
+    // what the rules are there to prevent. The two rows below pin that such a block is discarded.
+    test("should ignore a same-type rule supplied on the element and still enforce the range", () => {
       const element = {
         id: "slider1",
         type: TSurveyElementTypeEnum.Slider,
@@ -892,17 +952,45 @@ describe("validateElementResponse", () => {
         range: { min: 0, max: 100 },
         step: 5,
         showValue: true,
+        // A replacement `maxValue` of 1000 would admit values far outside the configured range.
         validation: {
-          rules: [{ id: "author-max", type: "maxValue", params: { max: 40 } }],
+          rules: [{ id: "injected-max", type: "maxValue", params: { max: 1000 } }],
         },
       } as unknown as TSurveySliderElement;
 
-      const result = validateElementResponse(element, 50, "en");
+      const result = validateElementResponse(element, 105, "en");
 
       expect(result.valid).toBe(false);
       const ruleIds = result.errors.map((error) => error.ruleId);
-      expect(ruleIds).toEqual(["author-max"]);
-      expect(ruleIds).not.toContain("__implicit_slider_max__");
+      expect(ruleIds).toEqual(["__implicit_slider_max__"]);
+      expect(ruleIds).not.toContain("injected-max");
+    });
+
+    test("should ignore an or-logic block supplied on the element and still enforce every constraint", () => {
+      const element = {
+        id: "slider1",
+        type: TSurveyElementTypeEnum.Slider,
+        headline: { default: "Pick a value" },
+        required: false,
+        range: { min: 0, max: 100 },
+        step: 5,
+        showValue: true,
+        // Under "or" a single passing rule short-circuits the rest, so one trivially satisfiable rule would
+        // otherwise be enough to wave through a value that is both out of range and off the grid.
+        validation: {
+          logic: "or",
+          rules: [{ id: "always-passes", type: "minValue", params: { min: 0 } }],
+        },
+      } as unknown as TSurveySliderElement;
+
+      const result = validateElementResponse(element, 107, "en");
+
+      expect(result.valid).toBe(false);
+      // AND semantics are restored, so both violated constraints are reported.
+      expect(result.errors.map((error) => error.ruleId)).toEqual([
+        "__implicit_slider_max__",
+        "__implicit_slider_step__",
+      ]);
     });
 
     test("should not inject the numeric rules for other element types", () => {
@@ -929,6 +1017,112 @@ describe("validateElementResponse", () => {
 
       expect(Object.keys(errorMap)).toEqual(["slider1"]);
       expect(errorMap.slider1.map((error) => error.ruleId)).toEqual(["__implicit_slider_step__"]);
+    });
+  });
+
+  // The element schema guarantees a finite range and step with min < max, but the editor's draft autosave
+  // path persists a survey without passing it, so at runtime a slider can reach the evaluator with a
+  // configuration the injected rules cannot be derived from. Reading it unguarded would raise a TypeError
+  // and surface as a generic 500; deriving no rules at all would leave the answer entirely unconstrained.
+  // Every row below therefore has to be rejected, and none of them may throw.
+  describe("slider configuration that cannot be trusted", () => {
+    const buildMalformedSlider = (overrides: Record<string, unknown>): TSurveyElement =>
+      ({
+        id: "slider1",
+        type: TSurveyElementTypeEnum.Slider,
+        headline: { default: "Pick a value" },
+        required: false,
+        range: { min: 0, max: 100 },
+        step: 5,
+        showValue: true,
+        ...overrides,
+      }) as unknown as TSurveySliderElement;
+
+    const malformedConfigurations: [string, Record<string, unknown>][] = [
+      ["an absent range", { range: undefined }],
+      ["a null range", { range: null }],
+      ["a range left as the base schema's numeric literal", { range: 5 }],
+      ["a range missing its minimum", { range: { max: 100 } }],
+      ["a range missing its maximum", { range: { min: 0 } }],
+      ["a non-numeric minimum", { range: { min: "0", max: 100 } }],
+      ["a non-numeric maximum", { range: { min: 0, max: "100" } }],
+      ["a non-finite maximum", { range: { min: 0, max: Number.POSITIVE_INFINITY } }],
+      ["an inverted range", { range: { min: 100, max: 0 } }],
+      ["a collapsed range", { range: { min: 50, max: 50 } }],
+      ["an absent step", { step: undefined }],
+      ["a non-numeric step", { step: "5" }],
+      ["a non-finite step", { step: Number.NaN }],
+      ["a zero step", { step: 0 }],
+      ["a negative step", { step: -5 }],
+    ];
+
+    test.each(malformedConfigurations)(
+      "should reject a submitted value against a slider with %s",
+      (_label, overrides) => {
+        const element = buildMalformedSlider(overrides);
+
+        // A value that would be perfectly valid against the well-formed configuration.
+        const result = validateElementResponse(element, 50, "en");
+
+        expect(result.valid).toBe(false);
+        expect(result.errors.map((error) => error.ruleId)).toEqual(["sliderConfiguration"]);
+        expect(result.errors[0].message).toBe("errors.invalid_format");
+      }
+    );
+
+    test.each(malformedConfigurations)(
+      "should keep an unanswered optional slider with %s valid",
+      (_label, overrides) => {
+        const result = validateElementResponse(buildMalformedSlider(overrides), undefined, "en");
+
+        expect(result.valid).toBe(true);
+        expect(result.errors).toHaveLength(0);
+      }
+    );
+
+    test("should report only the required error when a required malformed slider has no value", () => {
+      const element = buildMalformedSlider({ range: undefined, required: true });
+
+      const result = validateElementResponse(element, undefined, "en");
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((error) => error.ruleId)).toEqual(["required"]);
+    });
+
+    test("should report the shape error, not the configuration error, for a wrongly typed answer", () => {
+      const element = buildMalformedSlider({ range: undefined });
+
+      const result = validateElementResponse(element, "50", "en");
+
+      expect(result.valid).toBe(false);
+      // Exactly one structural error is reported: the shape gate is checked first and wins.
+      expect(result.errors.map((error) => error.ruleId)).toEqual(["sliderValueType"]);
+    });
+
+    test("should reject through validateBlockResponses (the shared server path)", () => {
+      const elements: TSurveyElement[] = [buildMalformedSlider({ step: 0 })];
+
+      const errorMap = validateBlockResponses(elements, { slider1: 50 }, "en");
+
+      expect(Object.keys(errorMap)).toEqual(["slider1"]);
+      expect(errorMap.slider1.map((error) => error.ruleId)).toEqual(["sliderConfiguration"]);
+      expect(getFirstErrorMessage(errorMap, "slider1")).toBe("errors.invalid_format");
+    });
+
+    test("should leave other element types untouched by the configuration gate", () => {
+      const element: TSurveyElement = {
+        id: "text1",
+        type: TSurveyElementTypeEnum.OpenText,
+        headline: { default: "Question" },
+        required: false,
+        inputType: "text",
+        charLimit: 0,
+      } as unknown as TSurveyOpenTextElement;
+
+      const result = validateElementResponse(element, "anything", "en");
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
     });
   });
 });
