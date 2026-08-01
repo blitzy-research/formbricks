@@ -914,4 +914,119 @@ describe("transformToTypeformPayload", () => {
       expect(() => ZTypeformCompatiblePayload.parse(result)).not.toThrow();
     });
   });
+
+  // =========================================================================
+  // 8. Slider Element Transformation Tests
+  // =========================================================================
+
+  describe("slider element transformation", () => {
+    // The slider is exercised through a dedicated single-element fixture rather than by extending the
+    // comprehensive mockSurvey above, so every count already asserted against that fixture stays exact.
+    const sliderSurvey = {
+      id: "survey_slider",
+      name: "Test Slider Survey",
+      blocks: [
+        {
+          id: "block_slider",
+          name: "Slider Block",
+          elements: [
+            {
+              id: "q_slider",
+              type: TSurveyElementTypeEnum.Slider,
+              headline: { default: "How satisfied are you?" },
+              required: true,
+              range: { min: 0, max: 100 },
+              step: 5,
+              subheader: { default: "" },
+            },
+          ],
+        },
+      ],
+      hiddenFields: {
+        enabled: false,
+        fieldIds: [],
+      },
+      variables: [],
+    } as unknown as TSurvey;
+
+    const sliderResponse = {
+      id: "response_slider",
+      createdAt: new Date("2024-06-15T10:30:00Z"),
+      updatedAt: new Date("2024-06-15T10:35:00Z"),
+      surveyId: "survey_slider",
+      finished: true,
+      data: {
+        q_slider: 50,
+      },
+      variables: {},
+    } as unknown as TResponse;
+
+    // A slider answer is a bare number, so the resolved data mirrors response.data with nothing to resolve
+    const resolvedSliderData: Record<string, unknown> = { ...sliderResponse.data };
+
+    test("should transform slider to number type answer", () => {
+      const result = transformToTypeformPayload(sliderResponse, sliderSurvey, resolvedSliderData);
+      const answer = result.answers.find((a) => a.field.id === "q_slider");
+      expect(answer).toBeDefined();
+      expect(answer?.type).toBe("number");
+      expect(answer?.number).toBe(50);
+      // The selection must survive as a real number, never as a stringified "50"
+      expect(typeof answer?.number).toBe("number");
+      expect(answer?.field.type).toBe("number");
+      expect(answer?.field.ref).toBe("q_slider");
+    });
+
+    test("should include the slider answer in the answers array rather than dropping it", () => {
+      const result = transformToTypeformPayload(sliderResponse, sliderSurvey, resolvedSliderData);
+      // Regression guard: transformAnswer returns null for an unmapped element type, which silently
+      // omitted the value before the slider gained its entry in ELEMENT_TYPE_TO_TYPEFORM_MAP.
+      expect(result.answers).toHaveLength(1);
+      expect(result.answers[0].field.id).toBe("q_slider");
+    });
+
+    test("should map slider to a number field in definition.fields, not the raw element type", () => {
+      const result = transformToTypeformPayload(sliderResponse, sliderSurvey, resolvedSliderData);
+      const field = result.definition.fields.find((f) => f.id === "q_slider");
+      expect(field).toBeDefined();
+      // Proves the mapping resolved rather than falling back to the element type itself, which would
+      // leak the raw "slider" discriminator into the published payload.
+      expect(field?.type).toBe("number");
+      expect(field?.type).not.toBe("slider");
+      expect(field?.title).toBe("How satisfied are you?");
+      expect(field?.ref).toBe("q_slider");
+    });
+
+    test("should transform a slider answered with its minimum of 0 instead of skipping it", () => {
+      const zeroResponse = {
+        ...sliderResponse,
+        data: { q_slider: 0 },
+      } as unknown as TResponse;
+      const result = transformToTypeformPayload(zeroResponse, sliderSurvey, { q_slider: 0 });
+      const answer = result.answers.find((a) => a.field.id === "q_slider");
+      // 0 is a legitimate selection for a range that starts at 0 — only null/undefined mean unanswered
+      expect(answer).toBeDefined();
+      expect(answer?.number).toBe(0);
+    });
+
+    test("should skip an unanswered slider while still publishing its field definition", () => {
+      const emptyResponse = {
+        ...sliderResponse,
+        data: {},
+      } as unknown as TResponse;
+      const result = transformToTypeformPayload(emptyResponse, sliderSurvey, {});
+      expect(result.answers).toHaveLength(0);
+      expect(result.definition.fields).toHaveLength(1);
+    });
+
+    test("should leave calculated.score at 0 for a slider-only survey", () => {
+      const result = transformToTypeformPayload(sliderResponse, sliderSurvey, resolvedSliderData);
+      // computeScore sums rating, nps and opinionScale only — the slider is deliberately excluded
+      expect(result.calculated.score).toBe(0);
+    });
+
+    test("should produce a payload that passes ZTypeformCompatiblePayload validation", () => {
+      const result = transformToTypeformPayload(sliderResponse, sliderSurvey, resolvedSliderData);
+      expect(() => ZTypeformCompatiblePayload.parse(result)).not.toThrow();
+    });
+  });
 });

@@ -37,6 +37,7 @@ import { PaymentElementForm } from "@/modules/survey/editor/components/payment-e
 import { PictureSelectionForm } from "@/modules/survey/editor/components/picture-selection-form";
 import { RankingElementForm } from "@/modules/survey/editor/components/ranking-element-form";
 import { RatingElementForm } from "@/modules/survey/editor/components/rating-element-form";
+import { SliderElementForm } from "@/modules/survey/editor/components/slider-element-form";
 import { formatTextWithSlashes } from "@/modules/survey/editor/lib/utils";
 import { getElementIconMap, getTSurveyElementTypeEnumName } from "@/modules/survey/lib/elements";
 import { Alert, AlertButton, AlertTitle } from "@/modules/ui/components/alert";
@@ -197,6 +198,7 @@ export const BlockCard = ({
     [TSurveyElementTypeEnum.ContactInfo]: ContactInfoElementForm,
     [TSurveyElementTypeEnum.OpinionScale]: OpinionScaleElementForm,
     [TSurveyElementTypeEnum.Payment]: PaymentElementForm,
+    [TSurveyElementTypeEnum.Slider]: SliderElementForm,
   };
 
   // Elements that need lastElement prop
@@ -232,9 +234,7 @@ export const BlockCard = ({
       additionalProps.project = project;
     }
 
-    // commonProps + additionalProps cover all required fields at runtime; TS cannot narrow the form
-    // component union statically, so a suppression is required here whenever the lookup above resolves
-    // to a concrete component union rather than to an element type the map does not yet cover.
+    // @ts-expect-error — commonProps + additionalProps cover all required fields at runtime; TS cannot narrow the form component union statically
     return <FormComponent {...commonProps} {...additionalProps} />;
   };
 

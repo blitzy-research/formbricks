@@ -28,6 +28,18 @@ const getSliderRoot = (container: HTMLElement): Element => {
   return root;
 };
 
+// ===========================================================================
+// Slider component tests
+//
+// Documented deviation from AGENTS.md §Testing Guidelines, which asks that
+// `.tsx` components be left to Playwright: this directory's own convention
+// wins, because both of the most recent element additions ship a colocated
+// component spec here, `vite.config.mts` deliberately collects `.tsx` specs
+// and aliases React to a single copy so they run, and no Playwright spec
+// covers these components. No end-to-end spec is added, matching both prior
+// element additions.
+// ===========================================================================
+
 describe("Slider", () => {
   beforeEach(() => {
     defaultProps.onChange.mockClear();
@@ -343,6 +355,8 @@ describe("Slider", () => {
 
   test("does not call onChange when disabled", () => {
     render(<Slider {...defaultProps} value={50} disabled />);
+    // The change handler short-circuits on `disabled`, so no key press can
+    // move the response value
     fireEvent.keyDown(screen.getByRole("slider"), { key: "ArrowRight" });
     expect(defaultProps.onChange).not.toHaveBeenCalled();
   });
@@ -490,6 +504,7 @@ describe("Slider", () => {
 
   test("shows required indicator when required is true", () => {
     render(<Slider {...defaultProps} required />);
+    // ElementHeader renders the default requiredLabel "Required" when required is true
     expect(screen.getByText("Required")).toBeInTheDocument();
   });
 

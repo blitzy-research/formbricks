@@ -30,6 +30,7 @@ import { PaymentSummary } from "@/app/(app)/environments/[environmentId]/surveys
 import { PictureChoiceSummary } from "@/app/(app)/environments/[environmentId]/surveys/[surveyId]/(analysis)/summary/components/PictureChoiceSummary";
 import { RankingSummary } from "@/app/(app)/environments/[environmentId]/surveys/[surveyId]/(analysis)/summary/components/RankingSummary";
 import { RatingSummary } from "@/app/(app)/environments/[environmentId]/surveys/[surveyId]/(analysis)/summary/components/RatingSummary";
+import { SliderSummary } from "@/app/(app)/environments/[environmentId]/surveys/[surveyId]/(analysis)/summary/components/SliderSummary";
 import { constructToastMessage } from "@/app/(app)/environments/[environmentId]/surveys/[surveyId]/(analysis)/summary/lib/utils";
 import { OptionsType } from "@/app/(app)/environments/[environmentId]/surveys/[surveyId]/components/ElementsComboBox";
 import { getLocalizedValue } from "@/lib/i18n/utils";
@@ -277,6 +278,15 @@ export const SummaryList = ({ summary, environment, responseCount, survey, local
           if (elementSummary.type === TSurveyElementTypeEnum.Payment) {
             return (
               <PaymentSummary
+                key={elementSummary.element.id}
+                elementSummary={elementSummary}
+                survey={survey}
+              />
+            );
+          }
+          if (elementSummary.type === TSurveyElementTypeEnum.Slider) {
+            return (
+              <SliderSummary
                 key={elementSummary.element.id}
                 elementSummary={elementSummary}
                 survey={survey}
