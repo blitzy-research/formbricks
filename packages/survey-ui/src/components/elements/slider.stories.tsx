@@ -145,7 +145,6 @@ export const Default: Story = {
   },
 };
 
-/** Adds the optional description rendered beneath the headline. */
 export const WithDescription: Story = {
   args: {
     elementId: "slider-description",
@@ -158,7 +157,6 @@ export const WithDescription: Story = {
   },
 };
 
-/** Required element: the header renders the default "Required" indicator. */
 export const Required: Story = {
   args: {
     elementId: "slider-required",
@@ -171,10 +169,6 @@ export const Required: Story = {
   },
 };
 
-/**
- * Validation failure on a required element, showing the destructive message row
- * and the indicator bar that marks the whole element as invalid.
- */
 export const WithError: Story = {
   args: {
     elementId: "slider-error",

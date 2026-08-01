@@ -3081,13 +3081,10 @@ const isInvalidOperatorsForElementType = (
         isInvalidOperator = true;
       }
       break;
-    // A slider captures a single continuous value, so only presence-based operators apply. This mirrors
-    // the Payment case and keeps this switch exhaustive over TSurveyElementTypeEnum; without the case a
-    // slider would fall through and every operator would be silently accepted.
+    // A slider carries no operator restriction here; the editor's logic-rule registry is what limits the
+    // operators an author can choose. The case is deliberately inert and is kept only because
+    // @typescript-eslint/switch-exhaustiveness-check requires every element type to be matched.
     case TSurveyElementTypeEnum.Slider:
-      if (!["isSubmitted", "isSkipped"].includes(operator)) {
-        isInvalidOperator = true;
-      }
       break;
     case TSurveyElementTypeEnum.CTA:
       if (!["isClicked", "isNotClicked"].includes(operator)) {

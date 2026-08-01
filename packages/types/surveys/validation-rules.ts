@@ -25,7 +25,7 @@ export const ZValidationRuleType = z.enum([
   "contains",
   "doesNotContain",
 
-  // Numeric rules (for OpenText inputType=number)
+  // Numeric rules
   "minValue",
   "maxValue",
   "isGreaterThan",
@@ -87,15 +87,13 @@ export const ZValidationRuleParamsMaxValue = z.object({
   max: z.number(),
 });
 
-// Grid-alignment rule params: the submitted value must sit on a `step` grid measured from `offset`.
-// `offset` is optional so the rule stays usable for grids anchored at zero (validators default it to 0);
-// when supplied it anchors alignment at a non-zero origin, e.g. min=10/step=5 accepts 15 but rejects 12.
-// Both fields are intentionally bare z.number() - matching ZValidationRuleParamsMinValue/MaxValue above.
-// Rejecting step <= 0 belongs to the owning element schema's refinement, not here, so that a malformed
-// step produces exactly one error message instead of two differently-worded ones.
+// `offset` anchors the `step` grid at a non-zero origin - min=10/step=5 accepts 15 but rejects 12 - and
+// defaults to 0 when omitted. Both fields are constrained here because a grid is only defined for a finite,
+// strictly positive step and a finite origin; the validator then fails closed on params it cannot evaluate,
+// while the owning element schema still reports the single author-facing "Step must be greater than zero".
 export const ZValidationRuleParamsStepMultipleOf = z.object({
-  step: z.number(),
-  offset: z.number().optional(),
+  step: z.number().finite().positive(),
+  offset: z.number().finite().optional(),
 });
 
 export const ZValidationRuleParamsMinSelections = z.object({
@@ -241,8 +239,35 @@ export const ZValidationRule = z.object({
 
 export type TValidationRule = z.infer<typeof ZValidationRule>;
 
-// Array of validation rules
-export const ZValidationRules = z.array(ZValidationRule);
+// Array of validation rules.
+// `params` is a plain (non-discriminated) union, so on its own it only proves that the params match
+// *some* rule type - `{ type: "stepMultipleOf", params: { min: 1 } }` satisfies it through the minValue
+// member, and the grid validator would then receive a cast object carrying no `step` at all. Grid
+// alignment is a security constraint (it is what rejects off-grid values posted straight to the response
+// endpoints), so the type/params pairing is verified here and fails closed instead of reaching the
+// validator as an unchecked cast. Only `stepMultipleOf` is coupled: every other rule type keeps its
+// existing behaviour byte-for-byte.
+// The explicit annotation is required rather than stylistic: refining this schema widens its inferred
+// type past the compiler's serialization limit, which surfaces as TS7056 in `js.ts` (that module embeds
+// the survey schemas). Annotating the export keeps the emitted type compact.
+export const ZValidationRules: z.ZodType<TValidationRule[], z.ZodTypeDef, TValidationRule[]> = z
+  .array(ZValidationRule)
+  .superRefine((rules, ctx) => {
+    rules.forEach((rule, index) => {
+      if (rule.type !== "stepMultipleOf") {
+        return;
+      }
+
+      if (!ZValidationRuleParamsStepMultipleOf.safeParse(rule.params).success) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "stepMultipleOf requires a finite positive step and, when present, a finite offset",
+          path: [index, "params"],
+        });
+      }
+    });
+  });
+
 export type TValidationRules = z.infer<typeof ZValidationRules>;
 
 // Applicable rules per element type - const arrays for type inference (must be defined before types)
@@ -313,8 +338,7 @@ export const APPLICABLE_RULES: Record<string, TValidationRuleType[]> = {
   payment: ["minValue", "maxValue"],
   opinionScale: [],
   // Intentionally empty, mirroring opinionScale: a slider's range and step-grid constraints are
-  // intrinsic to its configuration and are injected by the evaluator at validation time, so they
-  // are never author-selectable. Exposing them here would duplicate intrinsic rules in the editor.
+  // intrinsic to its configuration rather than author-selectable.
   slider: [],
 };
 

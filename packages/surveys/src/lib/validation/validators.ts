@@ -72,6 +72,121 @@ const parseNumericValue = (value: TResponseDataValue): number | null => {
   return null;
 };
 
+// Largest decimal scale that can still be compared as an exact integer: 10 ** 16 already exceeds
+// Number.MAX_SAFE_INTEGER, so beyond 15 decimal places the scaled operands stop being trustworthy.
+const MAX_GRID_SCALE_DECIMALS = 15;
+// Fallback tolerance expressed in units of the last representable bit of the largest operand. Rounding a
+// single multiply-add costs two to three of those units, so eight leaves headroom without ever reaching a
+// neighbouring grid point.
+const GRID_TOLERANCE_ULP_MULTIPLE = 8;
+// Hard cap on the fallback tolerance. It is a fraction of the STEP, never of the submitted value, which is
+// what stops a large answer from buying itself a large tolerance.
+const GRID_TOLERANCE_STEP_FRACTION = 1e-6;
+
+/**
+ * Count the decimal places of a number, or null when they cannot be counted reliably.
+ * Values that serialize in exponential notation (very large or very small magnitudes) yield null because
+ * their digit count does not map onto a decimal scaling factor.
+ */
+const countDecimalPlaces = (value: number): number | null => {
+  if (Number.isInteger(value)) {
+    return 0;
+  }
+
+  const text = String(value);
+  const separator = text.indexOf(".");
+  if (separator === -1) {
+    return null;
+  }
+
+  return text.length - separator - 1;
+};
+
+/**
+ * Exact grid test. Scales value, step and offset to integers by their shared decimal scale and uses
+ * integer remainder arithmetic, which is immune to the artefacts that make `%` unusable on decimals -
+ * `0.3 / 0.1` evaluates to 2.9999999999999996, so `(value - offset) % step === 0` wrongly rejects 0.3 on
+ * a 0.1 grid, whereas scaling both to 3 and 1 answers it exactly.
+ * Returns null when the operands cannot be scaled faithfully, in which case the caller falls back to the
+ * bounded drift comparison. A non-null result is authoritative: it is only produced when every operand
+ * round-trips through the scaling unchanged, so there is no representation error left to forgive.
+ */
+const isOnGridExactly = (value: number, step: number, offset: number): boolean | null => {
+  const valuePlaces = countDecimalPlaces(value);
+  const stepPlaces = countDecimalPlaces(step);
+  const offsetPlaces = countDecimalPlaces(offset);
+  if (valuePlaces === null || stepPlaces === null || offsetPlaces === null) {
+    return null;
+  }
+
+  const decimals = Math.max(valuePlaces, stepPlaces, offsetPlaces);
+  if (decimals > MAX_GRID_SCALE_DECIMALS) {
+    return null;
+  }
+
+  const scale = 10 ** decimals;
+  const scaledValue = Math.round(value * scale);
+  const scaledStep = Math.round(step * scale);
+  const scaledOffset = Math.round(offset * scale);
+  if (
+    !Number.isSafeInteger(scaledValue) ||
+    !Number.isSafeInteger(scaledStep) ||
+    !Number.isSafeInteger(scaledOffset) ||
+    scaledStep === 0
+  ) {
+    return null;
+  }
+
+  // Each scaled operand must reproduce its input exactly, otherwise the integers describe different
+  // numbers than the ones being validated and any verdict drawn from them would be meaningless.
+  if (scaledValue / scale !== value || scaledStep / scale !== step || scaledOffset / scale !== offset) {
+    return null;
+  }
+
+  const distance = scaledValue - scaledOffset;
+  if (!Number.isSafeInteger(distance)) {
+    return null;
+  }
+
+  return distance % scaledStep === 0;
+};
+
+/**
+ * Bounded fallback for operands the exact test cannot decide. Reconstructs the nearest grid point instead
+ * of dividing, then requires the drift to sit within a few units of floating-point representation error.
+ * The tolerance is deliberately NOT proportional to the submitted value: scaling it that way lets a large
+ * answer drift arbitrarily far off the grid and still pass.
+ */
+const isWithinGridTolerance = (value: number, step: number, offset: number): boolean => {
+  const multiples = Math.round((value - offset) / step);
+  if (!Number.isFinite(multiples)) {
+    return false;
+  }
+
+  const nearest = offset + multiples * step;
+  if (!Number.isFinite(nearest)) {
+    return false;
+  }
+
+  const magnitude = Math.max(Math.abs(value), Math.abs(nearest), Math.abs(offset), Math.abs(step));
+  const representationSlack = magnitude * Number.EPSILON * GRID_TOLERANCE_ULP_MULTIPLE;
+  const tolerance = Math.min(representationSlack, step * GRID_TOLERANCE_STEP_FRACTION);
+
+  return Math.abs(value - nearest) <= tolerance;
+};
+
+/**
+ * Whether `value` sits on the grid of `step` anchored at `offset`.
+ */
+const isOnStepGrid = (value: number, step: number, offset: number): boolean => {
+  const exact = isOnGridExactly(value, step, offset);
+  if (exact !== null) {
+    return exact;
+  }
+
+  return isWithinGridTolerance(value, step, offset);
+};
+
 /**
  * Registry of all validators, keyed by rule type
  */
@@ -243,30 +358,32 @@ export const validators: Record<TValidationRuleType, TValidator> = {
         return { valid: true };
       }
 
-      const numValue = parseNumericValue(value);
-      if (numValue === null) {
-        return { valid: true }; // Let pattern/type validation handle non-numeric
+      // A grid answer is contractually a single finite number, so the type is checked here rather than
+      // coerced: string coercion would let "50" and even "50junk" through, and a null parse result would
+      // wave arrays and objects past unchecked. The evaluator applies the same contract to a slider answer
+      // before any rule runs, so the two layers agree rather than one deferring to the other.
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        return { valid: false };
       }
 
-      const { step } = typedParams;
-      // A malformed step is the owning element schema's error to report, not this rule's, so stay
-      // graceful instead of dividing by zero and producing a second, differently-worded message.
-      if (!Number.isFinite(step) || step <= 0) {
-        return { valid: true };
+      // Fail closed on params that cannot describe a grid. A grid needs a finite, strictly positive step
+      // and a finite origin; without them there is nothing to validate against, and returning valid would
+      // silently disable the constraint on the server for exactly the malformed configurations an attacker
+      // would aim for. The owning element schema rejects such a configuration with its own author-facing
+      // message, so a real survey never reaches this branch.
+      const { step, offset: rawOffset } = typedParams;
+      if (typeof step !== "number" || !Number.isFinite(step) || step <= 0) {
+        return { valid: false };
+      }
+      if (rawOffset !== undefined && (typeof rawOffset !== "number" || !Number.isFinite(rawOffset))) {
+        return { valid: false };
       }
 
       // Alignment is measured from `offset`, the grid's origin, rather than from zero, so a grid
       // anchored at 10 with a step of 5 accepts 15 but rejects 12.
-      const offset = typedParams.offset ?? 0;
-      // Reconstruct the nearest multiple and measure drift in value space instead of using the modulo
-      // operator, which is unreliable for decimal steps because 0.3 / 0.1 evaluates to
-      // 2.9999999999999996. The tolerance is scale-relative so it is neither too tight for large
-      // magnitudes nor too loose for very small steps.
-      const nearest = Math.round((numValue - offset) / step);
-      const drift = Math.abs(numValue - (offset + nearest * step));
-      const tolerance = 1e-9 * Math.max(1, Math.abs(step), Math.abs(numValue));
+      const offset = rawOffset ?? 0;
 
-      return { valid: drift <= tolerance };
+      return { valid: isOnStepGrid(value, step, offset) };
     },
     getDefaultMessage: (params: TValidationRuleParams, _element: TSurveyElement, t: TFunction): string => {
       const typedParams = params as TValidationRuleParamsStepMultipleOf;

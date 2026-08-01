@@ -158,6 +158,45 @@ const checkRequiredField = (
 };
 
 /**
+ * Check the response value shape for elements whose answer contract is a single number.
+ *
+ * A slider answer is contractually exactly one number, but the transport schema `ZResponseDataValue`
+ * deliberately admits strings, arrays and records for the other element types, and every response route
+ * reaches this evaluator through `validateBlockResponses`. The numeric rules are intentionally lenient -
+ * they coerce with `Number.parseFloat` and skip values they cannot parse - so without this gate a payload
+ * such as `"50"`, `"50junk"` or `["50"]` posted straight to the API would satisfy the range and grid rules
+ * and then persist with the wrong shape. Rejecting it here keeps the server authoritative over the
+ * response contract while leaving the numeric rules element-agnostic and reusable.
+ *
+ * Emptiness is deliberately not handled here: `checkRequiredField` owns it, so an unanswered optional
+ * slider stays valid and an unanswered required slider yields exactly one "required" error.
+ */
+const checkSliderValueType = (
+  element: TSurveyElement,
+  value: TResponseDataValue,
+  t: TFunction
+): TValidationError | null => {
+  if (element.type !== TSurveyElementTypeEnum.Slider) {
+    return null;
+  }
+
+  if (isEmpty(value)) {
+    return null;
+  }
+
+  // `Number.isFinite` additionally rejects NaN and +/-Infinity, neither of which is a submittable value.
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return null;
+  }
+
+  return {
+    ruleId: "sliderValueType",
+    ruleType: "stepMultipleOf", // Structural field only - the numeric contract is not a validation rule
+    message: t("errors.invalid_format"),
+  } as TValidationError;
+};
+
+/**
  * Add implicit validation rules for OpenText elements based on inputType
  */
 const addImplicitOpenTextRules = (element: TSurveyElement, rules: TValidationRule[]): TValidationRule[] => {
@@ -365,6 +404,14 @@ export const validateElementResponse = (
   const requiredError = checkRequiredField(element, value, t);
   if (requiredError) {
     errors.push(requiredError);
+  }
+
+  // Check the response value shape before any rule runs, so a wrong-typed answer is rejected even when
+  // the numeric rules would have coerced it. Collected into `errors` up front, both execution paths below
+  // inherit it: AND logic appends to it and OR logic reports invalid while `errors` is non-empty.
+  const valueTypeError = checkSliderValueType(element, value, t);
+  if (valueTypeError) {
+    errors.push(valueTypeError);
   }
 
   // Validation rules apply to matrix elements regardless of required status

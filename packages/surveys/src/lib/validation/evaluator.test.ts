@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import type { TFunction } from "i18next";
 import { describe, expect, test, vi } from "vitest";
-import type { TResponseData } from "@formbricks/types/responses";
+import type { TResponseData, TResponseDataValue } from "@formbricks/types/responses";
 import { TSurveyElementTypeEnum } from "@formbricks/types/surveys/elements";
 import type {
   TSurveyAddressElement,
@@ -10,6 +10,7 @@ import type {
   TSurveyMatrixElement,
   TSurveyOpenTextElement,
   TSurveyRankingElement,
+  TSurveySliderElement,
 } from "@formbricks/types/surveys/elements";
 import { getFirstErrorMessage, validateBlockResponses, validateElementResponse } from "./evaluator";
 
@@ -686,6 +687,101 @@ describe("validateElementResponse", () => {
       expect(result.valid).toBe(true);
       expect(consoleSpy).toHaveBeenCalled();
       consoleSpy.mockRestore();
+    });
+  });
+
+  describe("slider response value type", () => {
+    const buildSliderElement = (required: boolean): TSurveyElement =>
+      ({
+        id: "slider1",
+        type: TSurveyElementTypeEnum.Slider,
+        headline: { default: "Pick a value" },
+        required,
+        range: { min: 0, max: 100 },
+        step: 5,
+        showValue: true,
+      }) as unknown as TSurveySliderElement;
+
+    const wrongTypedValues: [string, TResponseDataValue][] = [
+      ["a numeric string", "50"],
+      ["a partially numeric string", "50junk"],
+      ["a non-numeric string", "abc"],
+      ["an array", ["50"]],
+      ["a record", { value: "50" }],
+      ["NaN", Number.NaN],
+      ["Infinity", Number.POSITIVE_INFINITY],
+    ];
+
+    test.each(wrongTypedValues)("should reject %s submitted for a slider", (_label, value) => {
+      const result = validateElementResponse(buildSliderElement(false), value, "en");
+
+      expect(result.valid).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].ruleId).toBe("sliderValueType");
+      expect(result.errors[0].message).toBe("errors.invalid_format");
+    });
+
+    test.each([
+      ["an in-range number", 50],
+      ["the minimum of the range", 0],
+      ["the maximum of the range", 100],
+      ["a decimal number", 12.5],
+      ["a negative number", -10],
+    ])("should accept %s submitted for a slider", (_label, value) => {
+      const result = validateElementResponse(buildSliderElement(false), value, "en");
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    test("should report only the required error when a required slider has no value", () => {
+      const result = validateElementResponse(buildSliderElement(true), undefined, "en");
+
+      expect(result.valid).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].ruleId).toBe("required");
+    });
+
+    test("should keep an unanswered optional slider valid", () => {
+      const result = validateElementResponse(buildSliderElement(false), undefined, "en");
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    test("should report the type error, not the required error, for a wrongly typed answer", () => {
+      const result = validateElementResponse(buildSliderElement(true), "50", "en");
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((error) => error.ruleId)).toEqual(["sliderValueType"]);
+    });
+
+    test("should not apply the numeric contract to other element types", () => {
+      const element: TSurveyElement = {
+        id: "text1",
+        type: TSurveyElementTypeEnum.OpenText,
+        headline: { default: "Question" },
+        required: false,
+        inputType: "number",
+        charLimit: 0,
+      } as unknown as TSurveyOpenTextElement;
+
+      // OpenText stores its answer as a string even for inputType "number", so string input stays valid
+      const result = validateElementResponse(element, "50", "en");
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    test("should surface the type error through validateBlockResponses (the shared server path)", () => {
+      const elements: TSurveyElement[] = [buildSliderElement(false)];
+      const responses: TResponseData = { slider1: "50" };
+
+      const errorMap = validateBlockResponses(elements, responses, "en");
+
+      expect(Object.keys(errorMap)).toEqual(["slider1"]);
+      expect(errorMap.slider1[0].ruleId).toBe("sliderValueType");
+      expect(getFirstErrorMessage(errorMap, "slider1")).toBe("errors.invalid_format");
     });
   });
 });

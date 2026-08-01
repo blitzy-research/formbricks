@@ -291,6 +291,158 @@ describe("validators", () => {
     });
   });
 
+  describe("stepMultipleOf", () => {
+    test("should return valid true when the value sits on the grid", () => {
+      const result = validators.stepMultipleOf.check(50, { step: 5 }, {} as TSurveyElement);
+      expect(result.valid).toBe(true);
+    });
+
+    test("should return valid false when the value sits between grid points", () => {
+      const result = validators.stepMultipleOf.check(7, { step: 5 }, {} as TSurveyElement);
+      expect(result.valid).toBe(false);
+    });
+
+    test("should return valid true for the grid origin itself", () => {
+      const result = validators.stepMultipleOf.check(0, { step: 5 }, {} as TSurveyElement);
+      expect(result.valid).toBe(true);
+    });
+
+    test("should return valid true for a decimal step where modulo arithmetic would fail", () => {
+      // 0.3 / 0.1 evaluates to 2.9999999999999996, so a modulo comparison would reject this value.
+      const result = validators.stepMultipleOf.check(0.3, { step: 0.1 }, {} as TSurveyElement);
+      expect(result.valid).toBe(true);
+    });
+
+    test("should return valid false for a half-step offset on a decimal grid", () => {
+      const result = validators.stepMultipleOf.check(0.35, { step: 0.1 }, {} as TSurveyElement);
+      expect(result.valid).toBe(false);
+    });
+
+    test("should measure alignment from the offset rather than from zero", () => {
+      const result = validators.stepMultipleOf.check(15, { step: 5, offset: 10 }, {} as TSurveyElement);
+      expect(result.valid).toBe(true);
+    });
+
+    test("should return valid false for a value off an offset grid", () => {
+      const result = validators.stepMultipleOf.check(12, { step: 5, offset: 10 }, {} as TSurveyElement);
+      expect(result.valid).toBe(false);
+    });
+
+    test("should return valid true for an aligned value of very large magnitude", () => {
+      const result = validators.stepMultipleOf.check(1e12, { step: 5 }, {} as TSurveyElement);
+      expect(result.valid).toBe(true);
+    });
+
+    test("should return valid false for a large magnitude value two units off the grid", () => {
+      // A tolerance expressed as a fraction of the value would reach about 1e3 at this magnitude
+      // and wrongly accept this value.
+      const result = validators.stepMultipleOf.check(1e12 + 2, { step: 5 }, {} as TSurveyElement);
+      expect(result.valid).toBe(false);
+    });
+
+    test("should return valid false for a hundredth off the grid at a very large magnitude", () => {
+      const result = validators.stepMultipleOf.check(1e12 + 0.01, { step: 5 }, {} as TSurveyElement);
+      expect(result.valid).toBe(false);
+    });
+
+    test("should keep the tolerance below a fraction of the step on a very fine grid", () => {
+      const params = { step: 1e-6, offset: 1e9 };
+
+      const onGrid = validators.stepMultipleOf.check(1000000000.000002, params, {} as TSurveyElement);
+      expect(onGrid.valid).toBe(true);
+
+      const halfStep = validators.stepMultipleOf.check(1000000000.0000005, params, {} as TSurveyElement);
+      expect(halfStep.valid).toBe(false);
+    });
+
+    test("should return valid true for an aligned value near the precision limit", () => {
+      const result = validators.stepMultipleOf.check(999999.99, { step: 0.01 }, {} as TSurveyElement);
+      expect(result.valid).toBe(true);
+    });
+
+    test("should return valid false for a half-step value near the precision limit", () => {
+      const result = validators.stepMultipleOf.check(999999.995, { step: 0.01 }, {} as TSurveyElement);
+      expect(result.valid).toBe(false);
+    });
+
+    test("should return valid true for an aligned value on a grid with a negative origin", () => {
+      const result = validators.stepMultipleOf.check(0.02, { step: 0.01, offset: -5 }, {} as TSurveyElement);
+      expect(result.valid).toBe(true);
+    });
+
+    test("should reject string numbers, which the response contract does not admit", () => {
+      // A grid answer is contractually a single number. Coercing the string would let "50" and even
+      // "50junk" satisfy the rule on every server response route, so both are rejected outright.
+      const onGrid = validators.stepMultipleOf.check("50", { step: 5 }, {} as TSurveyElement);
+      expect(onGrid.valid).toBe(false);
+
+      const offGrid = validators.stepMultipleOf.check("7", { step: 5 }, {} as TSurveyElement);
+      expect(offGrid.valid).toBe(false);
+
+      const trailingJunk = validators.stepMultipleOf.check("50junk", { step: 5 }, {} as TSurveyElement);
+      expect(trailingJunk.valid).toBe(false);
+    });
+
+    test("should return valid true when value is empty", () => {
+      const result = validators.stepMultipleOf.check("", { step: 5 }, {} as TSurveyElement);
+      expect(result.valid).toBe(true);
+    });
+
+    test("should reject non-numeric values rather than waving them through", () => {
+      expect(validators.stepMultipleOf.check("abc", { step: 5 }, {} as TSurveyElement).valid).toBe(false);
+      expect(validators.stepMultipleOf.check(["50"], { step: 5 }, {} as TSurveyElement).valid).toBe(false);
+      expect(validators.stepMultipleOf.check({ value: "50" }, { step: 5 }, {} as TSurveyElement).valid).toBe(
+        false
+      );
+    });
+
+    test("should reject a non-finite value", () => {
+      expect(validators.stepMultipleOf.check(Number.NaN, { step: 5 }, {} as TSurveyElement).valid).toBe(
+        false
+      );
+      expect(
+        validators.stepMultipleOf.check(Number.POSITIVE_INFINITY, { step: 5 }, {} as TSurveyElement).valid
+      ).toBe(false);
+    });
+
+    test("should fail closed when the step is zero or negative", () => {
+      // Params that cannot describe a grid must not silently disable the constraint on the server.
+      const zeroStep = validators.stepMultipleOf.check(7, { step: 0 }, {} as TSurveyElement);
+      expect(zeroStep.valid).toBe(false);
+
+      const negativeStep = validators.stepMultipleOf.check(7, { step: -5 }, {} as TSurveyElement);
+      expect(negativeStep.valid).toBe(false);
+    });
+
+    test("should fail closed when the offset is not finite", () => {
+      const result = validators.stepMultipleOf.check(
+        50,
+        { step: 5, offset: Number.NaN },
+        {} as TSurveyElement
+      );
+      expect(result.valid).toBe(false);
+    });
+
+    test("should fail closed when the step is not finite", () => {
+      const notANumber = validators.stepMultipleOf.check(7, { step: Number.NaN }, {} as TSurveyElement);
+      expect(notANumber.valid).toBe(false);
+
+      const infinite = validators.stepMultipleOf.check(
+        7,
+        { step: Number.POSITIVE_INFINITY },
+        {} as TSurveyElement
+      );
+      expect(infinite.valid).toBe(false);
+    });
+
+    test("should return correct error message with the step interpolated", () => {
+      mockTFn.mockClear();
+      const message = validators.stepMultipleOf.getDefaultMessage({ step: 5 }, {} as TSurveyElement, mockT);
+      expect(message).toBe("errors.step_multiple_of");
+      expect(mockTFn).toHaveBeenCalledWith("errors.step_multiple_of", { step: 5 });
+    });
+  });
+
   describe("minSelections", () => {
     test("should return valid true when selection count >= min", () => {
       const result = validators.minSelections.check(["opt1", "opt2"], { min: 2 }, {} as TSurveyElement);
