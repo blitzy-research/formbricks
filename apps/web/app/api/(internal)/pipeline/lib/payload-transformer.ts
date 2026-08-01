@@ -15,7 +15,7 @@ import { getElementsFromBlocks } from "@/lib/survey/utils";
 // ---------------------------------------------------------------------------
 
 /**
- * Maps each of the 17 Formbricks element types to corresponding Typeform-compatible
+ * Maps each of the 18 Formbricks element types to corresponding Typeform-compatible
  * field type string and answer type string.
  *
  * For PictureSelection the default answerType is "choice" (single-select).
@@ -40,6 +40,7 @@ const ELEMENT_TYPE_TO_TYPEFORM_MAP: Record<string, { fieldType: string; answerTy
   [TSurveyElementTypeEnum.PictureSelection]: { fieldType: "picture_choice", answerType: "choice" },
   [TSurveyElementTypeEnum.Payment]: { fieldType: "payment", answerType: "payment" },
   [TSurveyElementTypeEnum.CTA]: { fieldType: "yes_no", answerType: "boolean" },
+  [TSurveyElementTypeEnum.Slider]: { fieldType: "number", answerType: "number" },
 };
 
 // ---------------------------------------------------------------------------

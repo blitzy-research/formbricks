@@ -267,6 +267,58 @@ const addImplicitContactInfoRules = (
 };
 
 /**
+ * Add implicit validation rules for Slider elements
+ *
+ * A slider's bounds and step grid are intrinsic to its configuration rather than author-configured:
+ * `APPLICABLE_RULES.slider` is deliberately empty and the element schema carries no `validation` field.
+ * The three constraints are therefore derived from the element here and executed by the ordinary rule
+ * engine - `minValue` and `maxValue` are reused verbatim, and only the grid check is new. Because this
+ * evaluator is the single one shared by the respondent renderer and by every response route, injecting
+ * the rules here makes the server authoritative over the numeric contract with no per-route code.
+ *
+ * `offset` anchors grid alignment at `range.min` rather than at zero, so a 10-50 range with a step of 5
+ * accepts 10, 15 and 20 while rejecting 12.
+ *
+ * No rule carries a `field`: `getFieldValue` hands the whole element value to unscoped rules only, which
+ * is what routes the single numeric answer into each validator.
+ */
+const addImplicitSliderRules = (element: TSurveyElement, rules: TValidationRule[]): TValidationRule[] => {
+  if (element.type !== TSurveyElementTypeEnum.Slider) {
+    return rules;
+  }
+
+  const hasRule = (type: string) => rules.some((r) => r.type === type);
+
+  // Each constraint is guarded on its own because all three apply simultaneously, and an existing rule of
+  // the same type - author-configured or already injected - is never overwritten.
+  if (!hasRule("minValue")) {
+    rules.push({
+      id: "__implicit_slider_min__",
+      type: "minValue",
+      params: { min: element.range.min },
+    } as TValidationRule);
+  }
+
+  if (!hasRule("maxValue")) {
+    rules.push({
+      id: "__implicit_slider_max__",
+      type: "maxValue",
+      params: { max: element.range.max },
+    } as TValidationRule);
+  }
+
+  if (!hasRule("stepMultipleOf")) {
+    rules.push({
+      id: "__implicit_slider_step__",
+      type: "stepMultipleOf",
+      params: { step: element.step, offset: element.range.min },
+    } as TValidationRule);
+  }
+
+  return rules;
+};
+
+/**
  * Get field value for address/contact info elements
  */
 const getFieldValue = (
@@ -425,6 +477,7 @@ export const validateElementResponse = (
   // Add implicit rules based on element type
   rules = addImplicitOpenTextRules(element, rules);
   rules = addImplicitContactInfoRules(element, rules);
+  rules = addImplicitSliderRules(element, rules);
 
   if (rules.length === 0) {
     return { valid: errors.length === 0, errors };

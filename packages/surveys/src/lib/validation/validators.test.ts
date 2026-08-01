@@ -370,6 +370,42 @@ describe("validators", () => {
       expect(result.valid).toBe(true);
     });
 
+    test("should treat an explicit zero offset exactly like an omitted one", () => {
+      // `offset` is optional and defaults to 0, so both spellings must agree. A regression that dropped
+      // the parameter would still satisfy every omitted-offset case while breaking the explicit one.
+      const onGrid = validators.stepMultipleOf.check(50, { step: 5, offset: 0 }, {} as TSurveyElement);
+      expect(onGrid.valid).toBe(true);
+
+      const offGrid = validators.stepMultipleOf.check(7, { step: 5, offset: 0 }, {} as TSurveyElement);
+      expect(offGrid.valid).toBe(false);
+    });
+
+    test("should align negative values on a grid anchored at zero", () => {
+      const onGrid = validators.stepMultipleOf.check(-10, { step: 5 }, {} as TSurveyElement);
+      expect(onGrid.valid).toBe(true);
+
+      const offGrid = validators.stepMultipleOf.check(-7, { step: 5 }, {} as TSurveyElement);
+      expect(offGrid.valid).toBe(false);
+    });
+
+    test("should extend the grid below its own origin", () => {
+      // Alignment is measured from the origin in both directions, so the origin itself and the point one
+      // step below it both sit on the grid.
+      const atOrigin = validators.stepMultipleOf.check(10, { step: 5, offset: 10 }, {} as TSurveyElement);
+      expect(atOrigin.valid).toBe(true);
+
+      const belowOrigin = validators.stepMultipleOf.check(5, { step: 5, offset: 10 }, {} as TSurveyElement);
+      expect(belowOrigin.valid).toBe(true);
+    });
+
+    test("should honour a fractional step that is not a power of ten", () => {
+      const onGrid = validators.stepMultipleOf.check(7.5, { step: 2.5 }, {} as TSurveyElement);
+      expect(onGrid.valid).toBe(true);
+
+      const offGrid = validators.stepMultipleOf.check(8, { step: 2.5 }, {} as TSurveyElement);
+      expect(offGrid.valid).toBe(false);
+    });
+
     test("should reject string numbers, which the response contract does not admit", () => {
       // A grid answer is contractually a single number. Coercing the string would let "50" and even
       // "50junk" satisfy the rule on every server response route, so both are rejected outright.
@@ -386,6 +422,21 @@ describe("validators", () => {
     test("should return valid true when value is empty", () => {
       const result = validators.stepMultipleOf.check("", { step: 5 }, {} as TSurveyElement);
       expect(result.valid).toBe(true);
+    });
+
+    test("should return valid true when no value was submitted at all", () => {
+      // An unanswered grid question is the required check's business, not this rule's, so a single
+      // omission is never reported twice. `null` is deliberately not exercised: the response contract
+      // is `string | number | string[] | Record<string, string> | undefined`, so it cannot occur.
+      const result = validators.stepMultipleOf.check(undefined, { step: 5 }, {} as TSurveyElement);
+      expect(result.valid).toBe(true);
+    });
+
+    test("should return valid true for empty collections", () => {
+      // An empty array or object counts as unanswered and defers to the required check, whereas a
+      // populated one is a genuine type violation and is rejected by the case below.
+      expect(validators.stepMultipleOf.check([], { step: 5 }, {} as TSurveyElement).valid).toBe(true);
+      expect(validators.stepMultipleOf.check({}, { step: 5 }, {} as TSurveyElement).valid).toBe(true);
     });
 
     test("should reject non-numeric values rather than waving them through", () => {

@@ -1066,6 +1066,33 @@ export const getElementSummary = async (
 
         break;
       }
+      case TSurveyElementTypeEnum.Slider: {
+        let totalResponseCount = 0;
+        let totalValue = 0;
+        let dismissed = 0;
+
+        responses.forEach((response) => {
+          const answer = response.data[element.id];
+          if (typeof answer === "number") {
+            totalResponseCount++;
+            totalValue += answer;
+          } else if (response.ttc && response.ttc[element.id] > 0) {
+            dismissed++;
+          }
+        });
+
+        summary.push({
+          type: element.type,
+          element,
+          responseCount: totalResponseCount,
+          average: convertFloatTo2Decimal(totalValue / totalResponseCount) || 0,
+          dismissed: {
+            count: dismissed,
+          },
+        });
+
+        break;
+      }
     }
   }
 

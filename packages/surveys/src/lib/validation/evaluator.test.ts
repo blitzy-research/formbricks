@@ -716,7 +716,9 @@ describe("validateElementResponse", () => {
       const result = validateElementResponse(buildSliderElement(false), value, "en");
 
       expect(result.valid).toBe(false);
-      expect(result.errors).toHaveLength(1);
+      // The value-type gate runs before any rule, so it is always reported first. The step-grid rule the
+      // evaluator injects from the element's own configuration also fails closed on a non-number, so the
+      // total error count is deliberately not pinned here - the gate's identity and message are.
       expect(result.errors[0].ruleId).toBe("sliderValueType");
       expect(result.errors[0].message).toBe("errors.invalid_format");
     });
@@ -725,10 +727,33 @@ describe("validateElementResponse", () => {
       ["an in-range number", 50],
       ["the minimum of the range", 0],
       ["the maximum of the range", 100],
-      ["a decimal number", 12.5],
-      ["a negative number", -10],
     ])("should accept %s submitted for a slider", (_label, value) => {
       const result = validateElementResponse(buildSliderElement(false), value, "en");
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    // A configuration whose own bounds and grid admit decimals and negative values, so the rows below keep
+    // proving that the numeric contract accepts those shapes while being measured against an element that
+    // actually allows them rather than against the 0-100 step-5 element above.
+    const buildSignedDecimalSliderElement = (): TSurveyElement =>
+      ({
+        id: "slider2",
+        type: TSurveyElementTypeEnum.Slider,
+        headline: { default: "Pick a value" },
+        required: false,
+        range: { min: -10, max: 10 },
+        step: 2.5,
+        showValue: true,
+      }) as unknown as TSurveySliderElement;
+
+    test.each([
+      ["a positive decimal", 7.5],
+      ["a negative number", -10],
+      ["a negative decimal", -2.5],
+    ])("should accept %s submitted for a signed decimal slider", (_label, value) => {
+      const result = validateElementResponse(buildSignedDecimalSliderElement(), value, "en");
 
       expect(result.valid).toBe(true);
       expect(result.errors).toHaveLength(0);
@@ -753,7 +778,9 @@ describe("validateElementResponse", () => {
       const result = validateElementResponse(buildSliderElement(true), "50", "en");
 
       expect(result.valid).toBe(false);
-      expect(result.errors.map((error) => error.ruleId)).toEqual(["sliderValueType"]);
+      const ruleIds = result.errors.map((error) => error.ruleId);
+      expect(ruleIds[0]).toBe("sliderValueType");
+      expect(ruleIds).not.toContain("required");
     });
 
     test("should not apply the numeric contract to other element types", () => {
@@ -782,6 +809,126 @@ describe("validateElementResponse", () => {
       expect(Object.keys(errorMap)).toEqual(["slider1"]);
       expect(errorMap.slider1[0].ruleId).toBe("sliderValueType");
       expect(getFirstErrorMessage(errorMap, "slider1")).toBe("errors.invalid_format");
+    });
+  });
+
+  describe("slider implicit range and grid rules", () => {
+    const buildSlider = (
+      range: { min: number; max: number },
+      step: number,
+      required = false
+    ): TSurveyElement =>
+      ({
+        id: "slider1",
+        type: TSurveyElementTypeEnum.Slider,
+        headline: { default: "Pick a value" },
+        required,
+        range,
+        step,
+        showValue: true,
+      }) as unknown as TSurveySliderElement;
+
+    test("should accept an in-range value that sits on the step grid", () => {
+      const result = validateElementResponse(buildSlider({ min: 0, max: 100 }, 5), 50, "en");
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    test("should reject a value above the configured maximum", () => {
+      const result = validateElementResponse(buildSlider({ min: 0, max: 100 }, 5), 105, "en");
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((error) => error.ruleId)).toEqual(["__implicit_slider_max__"]);
+      expect(result.errors[0].ruleType).toBe("maxValue");
+    });
+
+    test("should reject a value below the configured minimum", () => {
+      const result = validateElementResponse(buildSlider({ min: 10, max: 50 }, 5), 5, "en");
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((error) => error.ruleId)).toEqual(["__implicit_slider_min__"]);
+      expect(result.errors[0].ruleType).toBe("minValue");
+    });
+
+    test("should reject an in-range value that misses the step grid", () => {
+      const result = validateElementResponse(buildSlider({ min: 0, max: 100 }, 5), 7, "en");
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((error) => error.ruleId)).toEqual(["__implicit_slider_step__"]);
+      expect(result.errors[0].ruleType).toBe("stepMultipleOf");
+    });
+
+    test("should anchor the step grid at the range minimum rather than at zero", () => {
+      const element = buildSlider({ min: 10, max: 50 }, 5);
+
+      expect(validateElementResponse(element, 15, "en").valid).toBe(true);
+
+      const offGrid = validateElementResponse(element, 12, "en");
+      expect(offGrid.valid).toBe(false);
+      expect(offGrid.errors.map((error) => error.ruleId)).toEqual(["__implicit_slider_step__"]);
+    });
+
+    test("should treat zero as an answer when the range starts at zero", () => {
+      const result = validateElementResponse(buildSlider({ min: 0, max: 100 }, 5, true), 0, "en");
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    test("should reject a required slider submitted with an empty value", () => {
+      const result = validateElementResponse(buildSlider({ min: 0, max: 100 }, 5, true), "", "en");
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((error) => error.ruleId)).toEqual(["required"]);
+    });
+
+    test("should not overwrite a rule the author already configured for the same type", () => {
+      const element = {
+        id: "slider1",
+        type: TSurveyElementTypeEnum.Slider,
+        headline: { default: "Pick a value" },
+        required: false,
+        range: { min: 0, max: 100 },
+        step: 5,
+        showValue: true,
+        validation: {
+          rules: [{ id: "author-max", type: "maxValue", params: { max: 40 } }],
+        },
+      } as unknown as TSurveySliderElement;
+
+      const result = validateElementResponse(element, 50, "en");
+
+      expect(result.valid).toBe(false);
+      const ruleIds = result.errors.map((error) => error.ruleId);
+      expect(ruleIds).toEqual(["author-max"]);
+      expect(ruleIds).not.toContain("__implicit_slider_max__");
+    });
+
+    test("should not inject the numeric rules for other element types", () => {
+      const element: TSurveyElement = {
+        id: "text1",
+        type: TSurveyElementTypeEnum.OpenText,
+        headline: { default: "Question" },
+        required: false,
+        inputType: "text",
+        charLimit: 0,
+      } as unknown as TSurveyOpenTextElement;
+
+      const result = validateElementResponse(element, "anything", "en");
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    test("should enforce the rules through validateBlockResponses (the shared server path)", () => {
+      const elements: TSurveyElement[] = [buildSlider({ min: 0, max: 100 }, 5)];
+      const responses: TResponseData = { slider1: 7 };
+
+      const errorMap = validateBlockResponses(elements, responses, "en");
+
+      expect(Object.keys(errorMap)).toEqual(["slider1"]);
+      expect(errorMap.slider1.map((error) => error.ruleId)).toEqual(["__implicit_slider_step__"]);
     });
   });
 });

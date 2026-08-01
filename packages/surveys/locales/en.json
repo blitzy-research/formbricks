@@ -73,6 +73,7 @@
       "message": "Your response could not be submitted because it was flagged as automated activity. If you breathe, please try again.",
       "title": "We could not verify that you are human."
     },
+    "step_multiple_of": "Please enter a value in increments of {step}",
     "value_must_contain": "Value must contain {value}",
     "value_must_equal": "Value must equal {value}",
     "value_must_not_contain": "Value must not contain {value}",
