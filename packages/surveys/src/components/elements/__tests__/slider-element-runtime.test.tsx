@@ -23,11 +23,20 @@ import { SliderElement } from "../slider-element";
 // dependencies were populated by a passive effect, an ordering React guarantees and Preact does not.
 // Under the production alias the thumb never resolved, so it rendered hidden, exposed no `aria-valuenow`,
 // and every key press addressed a thumb index that did not exist - a required 0..100 slider stepped once
-// with the keyboard submitted `0` instead of `5`.
+// with the keyboard submitted `0` instead of `5`. The control is now a native `<input type="range">`
+// precisely so that no third-party scheduling assumption sits between the respondent and their answer.
 //
-// The assertions below therefore pin the value, keyboard, pointer, ARIA and submission behaviour at the
-// alias boundary. Every mocked-boundary concern (prop forwarding, time-to-completion arithmetic,
-// localisation) is covered by `slider-element.test.tsx`; this suite covers only what a mock cannot see.
+// Two things follow for what this suite asserts. First, the ARIA value set is now implicit - the browser
+// derives it from `min`, `max` and `value`, so those are what is pinned here rather than hand-written
+// `aria-*` attributes, and the resolved accessibility tree is verified in a real browser. Second, the one
+// alias-specific hazard that remains is event naming: a dragged range input reports through `input`, and
+// `preact/compat` maps an `onChange` prop onto that event. The change-reporting assertions below dispatch
+// `input` for exactly that reason - under the production alias they are what proves a drag is heard at all.
+//
+// Every mocked-boundary concern (prop forwarding, time-to-completion arithmetic, localisation) is covered
+// by `slider-element.test.tsx`; this suite covers only what a mock cannot see. Drag geometry, key
+// semantics and grid snapping belong to the platform and are verified in a real browser, since jsdom
+// renders no layout and implements neither.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -123,299 +132,135 @@ function SliderHarness({
   );
 }
 
-/** Returns the thumb - the node that owns the value, the keyboard and the ARIA state. */
-function getThumb(): HTMLElement {
-  return screen.getByRole("slider");
+/** Returns the platform control - `input[type="range"]` carries the implicit `slider` role. */
+function getControl(): HTMLInputElement {
+  return screen.getByRole("slider") as HTMLInputElement;
 }
 
-/** Pins the root's geometry so a pointer position maps to a predictable value. 200px wide, origin at 0. */
-function stubRootGeometry(container: Element, width = 200, left = 0): HTMLElement {
-  const root = container.querySelector<HTMLElement>('[data-slot="slider"]');
-  if (!root) throw new Error("slider root not found");
-  vi.spyOn(root, "getBoundingClientRect").mockReturnValue({
-    width,
-    height: 20,
-    left,
-    top: 0,
-    right: left + width,
-    bottom: 20,
-    x: left,
-    y: 0,
-    toJSON: () => ({}),
-  } as DOMRect);
-  return root;
+/** Locates one of the presentation slots the control draws from the current value. */
+function getSlot(container: Element, slot: string): HTMLElement {
+  const element = container.querySelector<HTMLElement>(`[data-slot="${slot}"]`);
+  if (!element) throw new Error(`no element with data-slot="${slot}" was rendered`);
+  return element;
+}
+
+/**
+ * Reports a value the way a dragged range input does: through an `input` event. Dispatching `input` rather
+ * than `change` is deliberate - it is the event a real drag emits, and `preact/compat` maps the component's
+ * `onChange` prop onto it, so this is the alias behaviour worth pinning.
+ */
+function reportValue(value: number): void {
+  fireEvent.input(getControl(), { target: { value: String(value) } });
 }
 
 describe("SliderElement under the production preact alias", () => {
   // -----------------------------------------------------------------------
-  // Suite 1: the thumb resolves its value
+  // Suite 1: the control resolves under the alias
+  //
+  // This is the suite that would have caught the production defect. The third-party primitive rendered a
+  // thumb whose value never resolved under Preact, so it came out hidden, valueless and inert. A platform
+  // control cannot fail that way, and these assertions are what pin that it is genuinely the platform
+  // control that reaches the respondent through the alias.
   // -----------------------------------------------------------------------
 
-  describe("thumb value resolution", () => {
-    test("renders exactly one thumb, focusable and carrying the full aria value set", () => {
+  describe("control resolution", () => {
+    test("renders exactly one control and it is the platform range input", () => {
       render(<SliderHarness />);
-      const thumbs = screen.getAllByRole("slider");
-      expect(thumbs).toHaveLength(1);
+      const controls = screen.getAllByRole("slider");
+      expect(controls).toHaveLength(1);
 
-      const thumb = thumbs[0];
-      expect(thumb.getAttribute("aria-valuemin")).toBe("0");
-      expect(thumb.getAttribute("aria-valuemax")).toBe("100");
-      expect(thumb.getAttribute("aria-valuenow")).toBe("0");
-      expect(thumb.getAttribute("tabindex")).toBe("0");
-      expect(thumb.getAttribute("id")).toBe("slider-element");
+      const control = controls[0] as HTMLInputElement;
+      expect(control.tagName).toBe("INPUT");
+      expect(control.type).toBe("range");
     });
 
-    test("renders the thumb visibly and positioned rather than hidden", () => {
-      render(<SliderHarness />);
-      const style = getThumb().getAttribute("style") ?? "";
-      expect(style).not.toContain("display: none");
-      expect(style).toContain("inset-inline-start");
-    });
-
-    test("reports the current value through aria-valuenow", () => {
-      render(<SliderHarness initialValue={50} />);
-      expect(getThumb().getAttribute("aria-valuenow")).toBe("50");
-    });
-
-    test("positions the thumb and the filled range from the current value", () => {
-      const { container } = render(<SliderHarness initialValue={50} />);
-      expect(getThumb().getAttribute("style") ?? "").toContain("50%");
-      const range = container.querySelector('[data-slot="slider-range"]');
-      expect(range?.getAttribute("style") ?? "").toContain("inset-inline-end: 50%");
-    });
-
-    test("announces an unanswered slider through aria-valuetext", () => {
-      render(<SliderHarness />);
-      expect(getThumb().getAttribute("aria-valuetext")).toBe("common.no_value_selected");
-    });
-
-    test("drops aria-valuetext once a value is selected so the number speaks for itself", () => {
-      render(<SliderHarness initialValue={50} />);
-      expect(getThumb().getAttribute("aria-valuetext")).toBeNull();
-    });
-
-    test("withholds the readout while no value exists", () => {
+    test("gives the control an id of its own rather than reusing the element's", () => {
+      // The element id belongs to the wrapper. Handing the same id to the control would leave two nodes
+      // answering to it, and a label points at whichever comes first - the wrapper - so the control would
+      // end up with no accessible name at all.
       const { container } = render(<SliderHarness />);
-      expect(container.querySelector("output")).toBeNull();
+      expect(getControl().id).toBe("slider-element-input");
+      expect(container.querySelectorAll('[id="slider-element"]')).toHaveLength(1);
     });
 
-    test("renders the readout once a value exists", () => {
-      const { container } = render(<SliderHarness initialValue={50} />);
-      expect(container.querySelector("output")?.textContent).toBe("50");
+    test("is named by the question itself, through a label that actually binds to it", () => {
+      render(<SliderHarness />);
+      const labels = Array.from(getControl().labels ?? []);
+      expect(labels.length).toBeGreaterThan(0);
+      expect(labels.map((label) => label.textContent).join(" ")).toContain("How satisfied are you?");
     });
 
-    test("moves the thumb and the readout as an interaction changes the value", () => {
-      // The value is round-tripped through the harness exactly as the survey runtime round-trips it, so this
-      // asserts the whole loop: the control reports a number, the runtime stores it, and the re-rendered thumb
-      // reflects it. A control that reports values but leaves its thumb parked fails here.
-      const { container } = render(<SliderHarness />);
-      const thumb = getThumb();
+    test("hands the configured range and grid to the platform as live state", () => {
+      // Properties rather than attributes: these are what the browser's own snapping, clamping and keyboard
+      // stepping read, so reading them back is what proves the configuration reached the platform intact.
+      render(<SliderHarness />);
+      const control = getControl();
+      expect(control.min).toBe("0");
+      expect(control.max).toBe("100");
+      expect(control.step).toBe("5");
+    });
 
-      fireEvent.keyDown(thumb, { key: "ArrowRight" });
-      expect(getThumb().getAttribute("aria-valuenow")).toBe("5");
-      expect(container.querySelector("output")?.textContent).toBe("5");
+    test("renders the control enabled, focusable and visible rather than hidden", () => {
+      render(<SliderHarness />);
+      const control = getControl();
+      expect(control.disabled).toBe(false);
+      expect(control.getAttribute("style") ?? "").not.toContain("display: none");
 
-      fireEvent.keyDown(getThumb(), { key: "End" });
-      expect(getThumb().getAttribute("aria-valuenow")).toBe("100");
-      expect(container.querySelector("output")?.textContent).toBe("100");
-      expect(getThumb().getAttribute("style") ?? "").toContain("100%");
+      control.focus();
+      expect(document.activeElement).toBe(control);
+    });
+
+    test("carries its value as platform state instead of authored aria attributes", () => {
+      // The browser derives `aria-valuenow`, `aria-valuemin` and `aria-valuemax` from the input's own state,
+      // so their absence as authored attributes is correct - and it is exactly the reliance on hand-written
+      // ARIA that the previous implementation had to get right and did not.
+      render(<SliderHarness initialValue={50} />);
+      const control = getControl();
+      expect(control.valueAsNumber).toBe(50);
+      expect(control.getAttribute("aria-valuenow")).toBeNull();
+      expect(control.getAttribute("aria-valuetext")).toBeNull();
+    });
+
+    test("parks an unanswered control at the element's own minimum", () => {
+      const element = createSliderElement({ range: { min: 10, max: 50 }, step: 5 });
+      render(<SliderHarness element={element} />);
+      const control = getControl();
+      expect(control.valueAsNumber).toBe(10);
+      expect(control.min).toBe("10");
+    });
+
+    test("omits a grid the configuration does not define rather than asserting a false one", () => {
+      const element = createSliderElement({ step: 0 });
+      render(<SliderHarness element={element} />);
+      expect(getControl().getAttribute("step")).toBeNull();
     });
   });
 
   // -----------------------------------------------------------------------
-  // Suite 2: keyboard interaction
+  // Suite 2: a reported value crosses the alias
+  //
+  // The remaining alias-specific hazard. A dragged range input reports through `input`, and `preact/compat`
+  // rewrites an `onChange` prop into an `oninput` listener for this input type - a range does not sit on its
+  // change-event exception list. These tests dispatch `input` because that is the event a drag emits, so
+  // they fail if the handler is ever wired to something the platform does not send.
   // -----------------------------------------------------------------------
 
-  describe("keyboard interaction", () => {
-    test("the first arrow key press steps one increment up from the minimum", () => {
-      // The exact production defect: the previous implementation swallowed this key press and committed
-      // the parked minimum, so a respondent who stepped forward once submitted 0 instead of 5.
+  describe("reporting a value", () => {
+    test("a native input event reaches the runtime handler", () => {
       const onResponse = vi.fn();
       render(<SliderHarness onResponse={onResponse} />);
-      const thumb = getThumb();
 
-      fireEvent.keyDown(thumb, { key: "ArrowRight" });
-      fireEvent.keyUp(thumb, { key: "ArrowRight" });
+      reportValue(45);
 
       expect(onResponse).toHaveBeenCalledTimes(1);
-      expect(onResponse).toHaveBeenCalledWith({ "slider-element": 5 });
-      expect(getThumb().getAttribute("aria-valuenow")).toBe("5");
+      expect(onResponse).toHaveBeenCalledWith({ "slider-element": 45 });
     });
 
-    test("continues stepping from the value already selected", () => {
-      const onResponse = vi.fn();
-      render(<SliderHarness initialValue={50} onResponse={onResponse} />);
-
-      fireEvent.keyDown(getThumb(), { key: "ArrowRight" });
-      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 55 });
-      expect(getThumb().getAttribute("aria-valuenow")).toBe("55");
-
-      fireEvent.keyDown(getThumb(), { key: "ArrowLeft" });
-      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 50 });
-      expect(getThumb().getAttribute("aria-valuenow")).toBe("50");
-    });
-
-    test("Home and End jump to the range bounds", () => {
-      const onResponse = vi.fn();
-      render(<SliderHarness initialValue={50} onResponse={onResponse} />);
-
-      fireEvent.keyDown(getThumb(), { key: "End" });
-      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 100 });
-
-      fireEvent.keyDown(getThumb(), { key: "Home" });
-      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 0 });
-      expect(getThumb().getAttribute("aria-valuenow")).toBe("0");
-    });
-
-    test("the page keys move by ten increments", () => {
-      const onResponse = vi.fn();
-      render(<SliderHarness initialValue={50} onResponse={onResponse} />);
-
-      fireEvent.keyDown(getThumb(), { key: "PageDown" });
-      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 0 });
-
-      fireEvent.keyDown(getThumb(), { key: "PageUp" });
-      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 50 });
-    });
-
-    test("steps from the element's own minimum when the range does not start at zero", () => {
-      const onResponse = vi.fn();
-      const element = createSliderElement({ range: { min: 10, max: 50 }, step: 5 });
-      render(<SliderHarness element={element} onResponse={onResponse} />);
-
-      expect(getThumb().getAttribute("aria-valuenow")).toBe("10");
-      fireEvent.keyDown(getThumb(), { key: "ArrowRight" });
-      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 15 });
-    });
-
-    test("bills time to completion once the key press finishes", () => {
-      const onTtc = vi.fn();
-      render(<SliderHarness onTtc={onTtc} />);
-      const thumb = getThumb();
-
-      fireEvent.keyDown(thumb, { key: "ArrowRight" });
-      expect(onTtc).not.toHaveBeenCalled();
-
-      fireEvent.keyUp(thumb, { key: "ArrowRight" });
-      expect(onTtc).toHaveBeenCalledTimes(1);
-      expect(typeof onTtc.mock.calls[0][0]["slider-element"]).toBe("number");
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // Suite 3: pointer interaction
-  // -----------------------------------------------------------------------
-
-  describe("pointer interaction", () => {
-    test("selects the value at the pressed position and moves the thumb there", () => {
-      const onResponse = vi.fn();
-      const { container } = render(<SliderHarness onResponse={onResponse} />);
-      const root = stubRootGeometry(container);
-
-      fireEvent.pointerDown(root, { pointerId: 1, clientX: 100 });
-
-      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 50 });
-      expect(getThumb().getAttribute("aria-valuenow")).toBe("50");
-      expect(getThumb().getAttribute("style") ?? "").toContain("50%");
-    });
-
-    test("tracks a drag and reports every position it crosses", () => {
-      const onResponse = vi.fn();
-      const { container } = render(<SliderHarness onResponse={onResponse} />);
-      const root = stubRootGeometry(container);
-
-      fireEvent.pointerDown(root, { pointerId: 1, clientX: 0 });
-      fireEvent.pointerMove(root, { pointerId: 1, clientX: 100 });
-      fireEvent.pointerMove(root, { pointerId: 1, clientX: 200 });
-      fireEvent.pointerUp(root, { pointerId: 1, clientX: 200 });
-
-      const reported = onResponse.mock.calls.map((call) => (call[0] as TResponseData)["slider-element"]);
-      expect(reported).toEqual([0, 50, 100]);
-      expect(getThumb().getAttribute("aria-valuenow")).toBe("100");
-    });
-
-    test("bills time to completion once when the drag ends, not per reported position", () => {
-      const onTtc = vi.fn();
-      const { container } = render(<SliderHarness onTtc={onTtc} />);
-      const root = stubRootGeometry(container);
-
-      fireEvent.pointerDown(root, { pointerId: 1, clientX: 0 });
-      fireEvent.pointerMove(root, { pointerId: 1, clientX: 100 });
-      expect(onTtc).not.toHaveBeenCalled();
-
-      fireEvent.pointerUp(root, { pointerId: 1, clientX: 100 });
-      expect(onTtc).toHaveBeenCalledTimes(1);
-    });
-
-    test("hands focus to the thumb so the keyboard continues from the pointer's value", () => {
-      const onResponse = vi.fn();
-      const { container } = render(<SliderHarness onResponse={onResponse} />);
-      const root = stubRootGeometry(container);
-
-      fireEvent.pointerDown(root, { pointerId: 1, clientX: 100 });
-      fireEvent.pointerUp(root, { pointerId: 1, clientX: 100 });
-
-      expect(document.activeElement).toBe(getThumb());
-
-      fireEvent.keyDown(getThumb(), { key: "ArrowRight" });
-      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 55 });
-    });
-
-    test("snaps a pressed position onto the configured grid", () => {
-      const onResponse = vi.fn();
-      const { container } = render(<SliderHarness onResponse={onResponse} />);
-      const root = stubRootGeometry(container);
-
-      // 47% of the range is 47, which is off a step-5 grid; the nearest grid point is 45.
-      fireEvent.pointerDown(root, { pointerId: 1, clientX: 94 });
-      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 45 });
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // Suite 4: right-to-left direction
-  // -----------------------------------------------------------------------
-
-  describe("right-to-left direction", () => {
-    test("inverts the horizontal arrows", () => {
-      const onResponse = vi.fn();
-      render(<SliderHarness dir="rtl" initialValue={50} onResponse={onResponse} />);
-
-      fireEvent.keyDown(getThumb(), { key: "ArrowRight" });
-      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 45 });
-
-      fireEvent.keyDown(getThumb(), { key: "ArrowLeft" });
-      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 50 });
-    });
-
-    test("keeps the vertical arrows pointing at the range bounds", () => {
-      const onResponse = vi.fn();
-      render(<SliderHarness dir="rtl" initialValue={50} onResponse={onResponse} />);
-
-      fireEvent.keyDown(getThumb(), { key: "ArrowUp" });
-      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 55 });
-    });
-
-    test("measures a pointer press from the right edge", () => {
-      const onResponse = vi.fn();
-      const { container } = render(<SliderHarness dir="rtl" onResponse={onResponse} />);
-      const root = stubRootGeometry(container);
-
-      fireEvent.pointerDown(root, { pointerId: 1, clientX: 50 });
-      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 75 });
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // Suite 5: the submitted response
-  // -----------------------------------------------------------------------
-
-  describe("submitted response", () => {
     test("writes a bare number keyed by the element id", () => {
       const onResponse = vi.fn();
       render(<SliderHarness onResponse={onResponse} />);
 
-      fireEvent.keyDown(getThumb(), { key: "End" });
+      reportValue(100);
 
       const responseData = onResponse.mock.calls[0][0] as TResponseData;
       expect(Object.keys(responseData)).toEqual(["slider-element"]);
@@ -423,27 +268,227 @@ describe("SliderElement under the production preact alias", () => {
       expect(responseData["slider-element"]).toBe(100);
     });
 
-    test("keeps a slider that was never touched free of any response value", () => {
-      const onResponse = vi.fn();
-      render(<SliderHarness onResponse={onResponse} />);
-      expect(onResponse).not.toHaveBeenCalled();
-    });
-
     test("reports a selection of the minimum as the number it is", () => {
+      // Not as `undefined` and not as an empty string: the required check and the summary's dismissed count
+      // both distinguish an answer of `0` from no answer, so this has to survive the whole round trip.
       const onResponse = vi.fn();
       render(<SliderHarness initialValue={50} onResponse={onResponse} />);
 
-      fireEvent.keyDown(getThumb(), { key: "Home" });
+      reportValue(0);
 
       const responseData = onResponse.mock.calls[0][0] as TResponseData;
       expect(responseData["slider-element"]).toBe(0);
       expect(typeof responseData["slider-element"]).toBe("number");
     });
 
-    test("surfaces a validation message alongside the control", () => {
-      render(<SliderHarness errorMessage="Please pick a value" />);
+    test("reports the value the platform resolved, not the raw one it was handed", () => {
+      // The platform clamps to its own bounds before the event is delivered, and the handler reads
+      // `valueAsNumber` off the control, so an over-range figure arrives already bounded.
+      const onResponse = vi.fn();
+      render(<SliderHarness onResponse={onResponse} />);
+
+      reportValue(150);
+
+      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 100 });
+    });
+
+    test("reports on the element's own grid when the range does not start at zero", () => {
+      const onResponse = vi.fn();
+      const element = createSliderElement({ range: { min: 10, max: 50 }, step: 5 });
+      render(<SliderHarness element={element} onResponse={onResponse} />);
+
+      reportValue(15);
+
+      expect(onResponse).toHaveBeenLastCalledWith({ "slider-element": 15 });
+    });
+
+    test("reports every value a continuous interaction passes through", () => {
+      const onResponse = vi.fn();
+      render(<SliderHarness onResponse={onResponse} />);
+
+      reportValue(25);
+      reportValue(50);
+      reportValue(75);
+
+      const reported = onResponse.mock.calls.map((call) => (call[0] as TResponseData)["slider-element"]);
+      expect(reported).toEqual([25, 50, 75]);
+    });
+
+    test("keeps a slider that was never touched free of any response value", () => {
+      const onResponse = vi.fn();
+      render(<SliderHarness onResponse={onResponse} />);
+      expect(onResponse).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Suite 3: the controlled round trip
+  //
+  // The runtime stores what the control reports and renders it straight back. Asserting the presentation
+  // after the round trip is what proves the answer is actually held: a control that reports values while
+  // its thumb stays parked - the shape of the production defect - fails here.
+  // -----------------------------------------------------------------------
+
+  describe("controlled round trip", () => {
+    test("moves the platform value, the thumb and the fill together", () => {
+      const { container } = render(<SliderHarness />);
+
+      reportValue(50);
+
+      expect(getControl().valueAsNumber).toBe(50);
+      expect(getSlot(container, "slider-thumb").getAttribute("style") ?? "").toContain("50%");
+      expect(getSlot(container, "slider-range").getAttribute("style") ?? "").toContain(
+        "inset-inline-end: 50%"
+      );
+    });
+
+    test("positions the thumb from the element's own range rather than from zero", () => {
+      const element = createSliderElement({ range: { min: 10, max: 50 }, step: 5 });
+      const { container } = render(<SliderHarness element={element} />);
+
+      reportValue(20);
+
+      // A quarter of the way along 10..50, so a quarter of the track less a quarter of the thumb.
+      expect(getSlot(container, "slider-thumb").getAttribute("style") ?? "").toContain("25%");
+    });
+
+    test("withholds the readout until a value exists, then tracks it", () => {
+      const { container } = render(<SliderHarness />);
+      expect(container.querySelector("output")).toBeNull();
+
+      reportValue(35);
+      expect(container.querySelector("output")?.textContent).toBe("35");
+
+      reportValue(40);
+      expect(container.querySelector("output")?.textContent).toBe("40");
+    });
+
+    test("honours an element that suppresses the readout", () => {
+      const element = createSliderElement({ showValue: false });
+      const { container } = render(<SliderHarness element={element} />);
+
+      reportValue(35);
+
+      expect(container.querySelector("output")).toBeNull();
+      expect(getControl().valueAsNumber).toBe(35);
+    });
+
+    test("keeps the handle a sibling of the control so its focus affordance can reach it", () => {
+      // The focus and hover rings are `peer-*` variants, which resolve against siblings of the control.
+      // Nesting the handle any deeper compiles them into selectors that match nothing, and a keyboard
+      // respondent is left with no visible focus indicator on an otherwise transparent control.
+      const { container } = render(<SliderHarness />);
+      expect(getSlot(container, "slider-thumb").parentElement).toBe(getControl().parentElement);
+    });
+
+    test("fills the thumb only once an answer exists", () => {
+      // The one state a range input cannot express on its own: parked at the minimum with nothing selected
+      // looks identical to answered with the minimum, so the fill is what tells them apart.
+      const { container } = render(<SliderHarness />);
+      expect(getSlot(container, "slider-thumb").className).toContain("bg-input-bg");
+
+      reportValue(0);
+
+      expect(getSlot(container, "slider-thumb").className).toContain("bg-brand");
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Suite 4: direction and localisation
+  // -----------------------------------------------------------------------
+
+  describe("direction and localisation", () => {
+    test("hands a right-to-left direction to the platform control as well as the wrapper", () => {
+      // The platform inverts the track, the fill and the keyboard from this attribute, so it has to land on
+      // the input itself and not only on the surrounding markup. The inversion itself is a browser
+      // behaviour and is verified there.
+      const { container } = render(<SliderHarness dir="rtl" initialValue={50} />);
+      expect(getControl().getAttribute("dir")).toBe("rtl");
+      expect(container.querySelector("#slider-element")?.getAttribute("dir")).toBe("rtl");
+    });
+
+    test("leaves the control to inherit direction when none is fixed", () => {
+      render(<SliderHarness dir="auto" />);
+      expect(getControl().getAttribute("dir")).toBeNull();
+    });
+
+    test("renders the localized headline, description and endpoint labels", () => {
+      render(<SliderHarness />);
+      expect(screen.getByText("How satisfied are you?")).toBeTruthy();
+      expect(screen.getByText("Drag the handle to pick a value")).toBeTruthy();
+      expect(screen.getByText("Not satisfied")).toBeTruthy();
+      expect(screen.getByText("Very satisfied")).toBeTruthy();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Suite 5: required state and validation
+  // -----------------------------------------------------------------------
+
+  describe("required state and validation", () => {
+    test("describes required-ness to the control, since the slider role has no required state", () => {
+      const { container } = render(<SliderHarness />);
+      const describedBy = getControl().getAttribute("aria-describedby") ?? "";
+      expect(describedBy).toContain("slider-element-input-required");
+      expect(container.querySelector("#slider-element-input-required")?.textContent).toBe("common.required");
+    });
+
+    test("leaves an optional slider undescribed", () => {
+      const element = createSliderElement({ required: false });
+      const { container } = render(<SliderHarness element={element} />);
+      expect(getControl().getAttribute("aria-describedby")).toBeNull();
+      expect(container.querySelector("#slider-element-input-required")).toBeNull();
+    });
+
+    test("surfaces a validation message and points the control at it", () => {
+      const { container } = render(<SliderHarness errorMessage="Please pick a value" />);
+
       expect(screen.getByText("Please pick a value")).toBeTruthy();
-      expect(getThumb().getAttribute("aria-invalid")).toBe("true");
+      expect(getControl().getAttribute("aria-invalid")).toBe("true");
+      expect(getControl().getAttribute("aria-describedby") ?? "").toContain("slider-element-input-error");
+      expect(container.querySelector("#slider-element-input-error")?.textContent).toContain(
+        "Please pick a value"
+      );
+    });
+
+    test("renders no error affordance while the answer is acceptable", () => {
+      const { container } = render(<SliderHarness />);
+      expect(getControl().getAttribute("aria-invalid")).toBeNull();
+      expect(container.querySelector("#slider-element-input-error")).toBeNull();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Suite 6: time to completion
+  //
+  // The arithmetic is covered against the mocked control in `slider-element.test.tsx`. What only the real
+  // control can show is that a value crossing the alias is what triggers the billing at all.
+  // -----------------------------------------------------------------------
+
+  describe("time to completion", () => {
+    test("bills the element as soon as the real control reports a value", () => {
+      const onTtc = vi.fn();
+      render(<SliderHarness onTtc={onTtc} />);
+      expect(onTtc).not.toHaveBeenCalled();
+
+      reportValue(50);
+
+      expect(onTtc).toHaveBeenCalledTimes(1);
+      expect(typeof onTtc.mock.calls[0][0]["slider-element"]).toBe("number");
+    });
+
+    test("bills a continuous interaction once per reported value and keeps the total finite", () => {
+      const onTtc = vi.fn();
+      render(<SliderHarness onTtc={onTtc} />);
+
+      reportValue(25);
+      reportValue(50);
+      reportValue(75);
+
+      expect(onTtc).toHaveBeenCalledTimes(3);
+      const total = onTtc.mock.calls[2][0]["slider-element"] as number;
+      expect(Number.isFinite(total)).toBe(true);
+      expect(total).toBeGreaterThanOrEqual(0);
     });
   });
 });

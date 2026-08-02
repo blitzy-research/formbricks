@@ -26,10 +26,11 @@ interface SliderElementProps {
  * would otherwise be indistinguishable from one that was skipped, which both the required check and the
  * summary's dismissed count depend on.
  *
- * Time to completion is accounted per completed interaction, not per value change: `getUpdatedTtc` ADDS
- * the duration it is handed, so charging the full elapsed time on every value a drag reports would bill
- * the same seconds repeatedly. `handleChange` therefore only writes the response, and `handleValueCommit`
- * closes one segment and opens the next when a drag or key press finishes.
+ * Time to completion is billed per change, as the sibling elements bill it, with one addition that a
+ * continuous control needs: `getUpdatedTtc` ADDS the duration it is handed, and a drag reports many values,
+ * so each change closes its own segment and immediately opens the next from the same clock reading. Without
+ * that reset the elapsed time since the element was shown would be re-charged on every value the drag
+ * reported, billing one interaction as if it were dozens.
  */
 export function SliderElement({
   element,
@@ -50,14 +51,11 @@ export function SliderElement({
 
   const handleChange = (sliderValue: number) => {
     onChange({ [element.id]: sliderValue });
-  };
 
-  const handleValueCommit = () => {
     // A single reading of the clock closes the finished segment and opens the next one, so the instant
     // between the two is neither billed twice nor lost.
     const now = performance.now();
-    const updatedTtcObj = getUpdatedTtc(ttc, element.id, now - startTime);
-    setTtc(updatedTtcObj);
+    setTtc(getUpdatedTtc(ttc, element.id, now - startTime));
     setStartTime(now);
   };
 
@@ -72,7 +70,10 @@ export function SliderElement({
     <form key={element.id} onSubmit={handleSubmit} className="w-full">
       <Slider
         elementId={element.id}
-        inputId={element.id}
+        // Distinct from the element id, which the control puts on its own wrapper: the header's label and
+        // the value readout both point at this id, and a duplicate would bind them to the wrapper instead,
+        // leaving the control with no accessible name.
+        inputId={`${element.id}-input`}
         headline={getLocalizedValue(element.headline, languageCode)}
         description={element.subheader ? getLocalizedValue(element.subheader, languageCode) : undefined}
         min={element.range.min}
@@ -80,13 +81,11 @@ export function SliderElement({
         step={element.step}
         value={value}
         onChange={handleChange}
-        onValueCommit={handleValueCommit}
         lowerLabel={element.lowerLabel ? getLocalizedValue(element.lowerLabel, languageCode) : undefined}
         upperLabel={element.upperLabel ? getLocalizedValue(element.upperLabel, languageCode) : undefined}
         showValue={element.showValue}
         required={isRequired}
         requiredLabel={t("common.required")}
-        unansweredLabel={t("common.no_value_selected")}
         dir={dir}
         imageUrl={element.imageUrl}
         videoUrl={element.videoUrl}

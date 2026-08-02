@@ -1,6 +1,5 @@
 import type { TFunction } from "i18next";
 import type { TResponseDataValue } from "@formbricks/types/responses";
-import { isWithinGridDecimalScale } from "@formbricks/types/surveys/constants";
 import type { TSurveyElement } from "@formbricks/types/surveys/elements";
 import type {
   TValidationRuleParams,
@@ -94,8 +93,7 @@ interface TScaledDecimal {
 }
 
 /**
- * Decompose a number into its exact decimal form, or null when it cannot be scaled within
- * MAX_GRID_DECIMAL_SCALE.
+ * Decompose a number into its exact decimal form, or null when it has none.
  *
  * The decomposition is taken from the shortest decimal string that round-trips back to the same double,
  * which is the decimal the survey author typed and the respondent sees - `0.2` rather than the binary
@@ -103,14 +101,12 @@ interface TScaledDecimal {
  * 0.3, and it is exact: no digit of the printed form is discarded, so the returned pair describes the
  * operand and nothing else.
  *
- * The scale limit is not decided here: `isWithinGridDecimalScale` is the one definition of it, shared with
- * the element schemas that inject this rule, so a configuration the schema publishes can always be judged
- * and one it rejects is the only kind this fails closed on.
+ * Every finite double has such a form and no bound is placed on how precise it may be, so this rule owns
+ * the whole of its own judgement: there is no configuration it must be shielded from by the element schema
+ * that injects it. Only a non-finite operand has no decimal form at all.
  */
 const toScaledDecimal = (value: number): TScaledDecimal | null => {
-  // Fail closed on any operand the shared grid contract cannot state exactly: a non-finite value, or one
-  // needing more decimal places than MAX_GRID_DECIMAL_SCALE.
-  if (!isWithinGridDecimalScale(value)) {
+  if (!Number.isFinite(value)) {
     return null;
   }
 
@@ -140,6 +136,25 @@ const liftToScale = (decimal: TScaledDecimal, scale: number): bigint =>
   decimal.digits * 10n ** BigInt(scale - decimal.scale);
 
 /**
+ * Whether the exact decimal `digits / 10 ** scale` is no larger than the finite double `bound`.
+ *
+ * The comparison stays in the BigInt domain deliberately. Dividing the digits by `10 ** scale` to get a
+ * double would report every residual as zero once the scale passed 308, because `10 ** 309` is Infinity -
+ * turning this fail-closed check into a fail-open one exactly where precision is highest. Restating both
+ * sides on one shared scale answers the same question with no such cliff, which is what lets this rule
+ * accept any finite operand instead of needing a ceiling on how precise one may be.
+ */
+const isScaledDecimalAtMost = (decimal: TScaledDecimal, bound: number): boolean => {
+  const scaledBound = toScaledDecimal(bound);
+  if (scaledBound === null) {
+    return false;
+  }
+
+  const scale = Math.max(decimal.scale, scaledBound.scale);
+  return liftToScale(decimal, scale) <= liftToScale(scaledBound, scale);
+};
+
+/**
  * Whether `value` sits on the grid of `step` anchored at `offset`.
  *
  * The verdict is decided by exact decimal arithmetic. All three operands are restated on one shared scale
@@ -162,7 +177,7 @@ const isOnStepGrid = (value: number, step: number, offset: number): boolean => {
   const scaledValue = toScaledDecimal(value);
   const scaledStep = toScaledDecimal(step);
   const scaledOffset = toScaledDecimal(offset);
-  // Fail closed: an operand that cannot be restated exactly cannot be shown to sit on the grid.
+  // Fail closed: an operand with no decimal form cannot be shown to sit on the grid.
   if (scaledValue === null || scaledStep === null || scaledOffset === null) {
     return false;
   }
@@ -182,11 +197,13 @@ const isOnStepGrid = (value: number, step: number, offset: number): boolean => {
   }
 
   const gapDigits = remainder < stepDigits - remainder ? remainder : stepDigits - remainder;
-  const gap = Number(gapDigits) / 10 ** scale;
   const magnitude = Math.max(Math.abs(value), Math.abs(offset));
-  const representationSlack = magnitude * Number.EPSILON * GRID_TOLERANCE_ULP_MULTIPLE;
+  const tolerance = Math.min(
+    magnitude * Number.EPSILON * GRID_TOLERANCE_ULP_MULTIPLE,
+    step * GRID_TOLERANCE_STEP_FRACTION
+  );
 
-  return gap <= Math.min(representationSlack, step * GRID_TOLERANCE_STEP_FRACTION);
+  return isScaledDecimalAtMost({ digits: gapDigits, scale }, tolerance);
 };
 
 /**

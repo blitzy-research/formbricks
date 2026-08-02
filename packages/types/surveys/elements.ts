@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ZStorageUrl, ZUrl } from "../common";
 import { ZI18nString } from "../i18n";
 import { ZAllowedFileExtension } from "../storage";
-import { TSurveyElementTypeEnum, isWithinGridDecimalScale } from "./constants";
+import { TSurveyElementTypeEnum } from "./constants";
 import { FORBIDDEN_IDS } from "./validation";
 import { ZValidationRules } from "./validation-rules";
 
@@ -379,11 +379,8 @@ export type TSurveyPaymentElement = z.infer<typeof ZSurveyPaymentElement>;
 // continuous scale described by its own { min, max } bounds rather than one of the fixed rating scales.
 export const ZSurveySliderElement = ZSurveyElementBase.extend({
   type: z.literal(TSurveyElementTypeEnum.Slider),
-  // `.finite()` keeps the numeric domain safe: ±Infinity satisfies a bare `z.number()` yet turns every
-  // downstream calculation - thumb position, grid alignment, summary average - into NaN, so a non-finite
-  // bound or step is rejected at the contract boundary rather than degrading silently further downstream.
-  range: z.object({ min: z.number().finite(), max: z.number().finite() }),
-  step: z.number().finite(),
+  range: z.object({ min: z.number(), max: z.number() }),
+  step: z.number(),
   lowerLabel: ZI18nString.optional(),
   upperLabel: ZI18nString.optional(),
   showValue: z.boolean().optional().default(true),
@@ -404,69 +401,15 @@ export const ZSurveySliderElement = ZSurveyElementBase.extend({
     });
   }
 
-  // The checks below are only meaningful once the bounds and the step are individually valid, otherwise
-  // the author would see two errors for a single mistake.
-  if (data.range.min >= data.range.max || data.step <= 0) {
-    return;
-  }
-
-  const span = data.range.max - data.range.min;
-
-  // Two individually finite bounds can still describe a span that overflows to Infinity, e.g.
-  // -Number.MAX_VALUE to Number.MAX_VALUE. Every span-relative calculation - the step comparison below,
-  // the respondent control's thumb offset and the summary's average position - would then be NaN.
-  if (!Number.isFinite(span)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "The range is too wide to be represented",
-      path: ["range"],
-    });
-    return;
-  }
-
-  if (data.step > span) {
+  // Guarded so it only evaluates once the bounds and the step are individually valid, otherwise the author
+  // would see two errors for a single mistake.
+  if (data.range.min < data.range.max && data.step > 0 && data.step > data.range.max - data.range.min) {
+    // A step wider than the range would leave only the minimum selectable, which is a configuration error
+    // the author should see in the editor rather than discover from respondents.
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: "Step cannot be larger than the range",
       path: ["step"],
-    });
-    return;
-  }
-
-  // Precision guard: at very large magnitudes the double nearest to `bound + step` is `bound` itself, so
-  // the grid silently collapses to a single selectable value and no answer could ever sit on it. The
-  // largest-magnitude bound is the worst case, e.g. min 0 / max 1e15 / step 0.01.
-  const magnitude = Math.max(Math.abs(data.range.min), Math.abs(data.range.max));
-  if (magnitude + data.step === magnitude) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Step is too small to be applied across the range",
-      path: ["step"],
-    });
-    return;
-  }
-
-  // Evaluability guard: the shared `stepMultipleOf` rule this element injects decides grid alignment by
-  // restating the value, the step and the grid's origin as exact decimals, and it fails closed on an operand
-  // needing more decimal places than MAX_GRID_DECIMAL_SCALE. Accepting such a configuration would publish a
-  // slider on which *no* answer could ever validate - not even `range.min + step` - so the two layers are
-  // held to the one shared limit: what this schema admits, the grid test can always judge.
-  if (!isWithinGridDecimalScale(data.step)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Step is too precise to be validated",
-      path: ["step"],
-    });
-    return;
-  }
-
-  // `range.min` anchors the grid, so an origin that cannot be stated exactly disqualifies every value just
-  // as an unstatable step does.
-  if (!isWithinGridDecimalScale(data.range.min)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Minimum value is too precise to be validated",
-      path: ["range"],
     });
   }
 });

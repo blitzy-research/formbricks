@@ -22,13 +22,11 @@ interface MockSliderProps {
   step: number;
   value?: number;
   onChange: (value: number) => void;
-  onValueCommit?: (value: number) => void;
   lowerLabel?: string;
   upperLabel?: string;
   showValue?: boolean;
   required?: boolean;
   requiredLabel?: string;
-  unansweredLabel?: string;
   errorMessage?: string;
   dir?: string;
   imageUrl?: string;
@@ -42,17 +40,14 @@ interface MockSliderProps {
 // the mock deliberately owns none of it. It renders every forwarded prop as an inspectable node and
 // exposes buttons that invoke `onChange` with a chosen number, which is exactly the boundary this
 // wrapper is responsible for: the control hands it a bare number and the wrapper turns that into a
-// response payload. A separate button invokes `onValueCommit`, the signal the control raises once a
-// drag or key press finishes, because the wrapper bills time to completion from that signal rather
-// than from each reported value.
+// response payload, and bills a segment of time to completion for it.
 //
 // `value` and `showValue` are stringified rather than rendered directly, because `0` and `false` are
 // meaningful values here and conditional rendering would erase them.
 //
 // The buttons are explicitly `type="button"` so a selection never implicitly submits the surrounding
-// form. That keeps the three code paths under test apart: a selection exercises only the change handler,
-// a commit only the interaction-completion handler, while the submission tests dispatch a submit event
-// themselves.
+// form. That keeps the two code paths under test apart: a selection exercises only the change handler,
+// while the submission tests dispatch a submit event themselves.
 // ---------------------------------------------------------------------------
 
 vi.mock("@formbricks/survey-ui", () => ({
@@ -67,13 +62,11 @@ vi.mock("@formbricks/survey-ui", () => ({
       step,
       value,
       onChange,
-      onValueCommit,
       lowerLabel,
       upperLabel,
       showValue,
       required,
       requiredLabel,
-      unansweredLabel,
       errorMessage,
       dir,
       imageUrl,
@@ -81,6 +74,7 @@ vi.mock("@formbricks/survey-ui", () => ({
     }: MockSliderProps) => (
       <div data-testid={`slider-${elementId}`}>
         <span data-testid="headline">{headline}</span>
+        <span data-testid="element-id">{elementId}</span>
         <span data-testid="input-id">{inputId}</span>
         <span data-testid="min">{min}</span>
         <span data-testid="max">{max}</span>
@@ -91,7 +85,6 @@ vi.mock("@formbricks/survey-ui", () => ({
         {lowerLabel ? <span data-testid="lower-label">{lowerLabel}</span> : null}
         {upperLabel ? <span data-testid="upper-label">{upperLabel}</span> : null}
         {required ? <span data-testid="required">{requiredLabel}</span> : null}
-        {unansweredLabel ? <span data-testid="unanswered-label">{unansweredLabel}</span> : null}
         {dir ? <span data-testid="dir">{dir}</span> : null}
         {imageUrl ? <span data-testid="image-url">{imageUrl}</span> : null}
         {videoUrl ? <span data-testid="video-url">{videoUrl}</span> : null}
@@ -107,9 +100,6 @@ vi.mock("@formbricks/survey-ui", () => ({
         </button>
         <button type="button" data-testid="select-fifty" onClick={() => onChange(50)}>
           select fifty
-        </button>
-        <button type="button" data-testid="commit-interaction" onClick={() => onValueCommit?.(value ?? min)}>
-          commit interaction
         </button>
       </div>
     )
@@ -214,9 +204,13 @@ describe("SliderElement", () => {
       expect(screen.getByTestId("slider-s1")).toBeTruthy();
     });
 
-    test("uses the element id as the control's input id", () => {
+    test("gives the control an input id derived from, but distinct from, the element id", () => {
+      // The element id is already on the control's own wrapper. Reusing it for the input would leave two
+      // nodes answering to one id, and the header's label binds to whichever comes first - the wrapper -
+      // so the control would be left with no accessible name.
       render(<SliderElement {...defaultProps} />);
-      expect(screen.getByTestId("input-id").textContent).toBe("s1");
+      expect(screen.getByTestId("input-id").textContent).toBe("s1-input");
+      expect(screen.getByTestId("element-id").textContent).toBe("s1");
     });
 
     test("forwards the configured minimum, maximum and step", () => {
@@ -474,61 +468,66 @@ describe("SliderElement", () => {
       expect(mockUseTtc.mock.calls[0][5]).toBe(false);
     });
 
-    test("reports the time elapsed since mount when an interaction completes", () => {
+    test("reports the time elapsed since mount when a value is reported", () => {
       const ttc = { s1: 200 } as TResponseTtc;
       render(<SliderElement {...defaultProps} ttc={ttc} />);
       // The wrapper captured 1000 as its start time on mount, so advancing the clock by 500 must be
       // reported as 500 rather than as the absolute timestamp.
       vi.spyOn(performance, "now").mockReturnValue(1500);
       fireEvent.click(screen.getByTestId("select-fifty"));
-      fireEvent.click(screen.getByTestId("commit-interaction"));
       expect(mockGetUpdatedTtc).toHaveBeenCalledWith(ttc, "s1", 500);
     });
 
-    test("accumulates the elapsed time onto the existing record when an interaction completes", () => {
+    test("accumulates the elapsed time onto the existing record", () => {
       const setTtc = vi.fn();
       const ttc = { s1: 200 } as TResponseTtc;
       render(<SliderElement {...defaultProps} ttc={ttc} setTtc={setTtc} />);
       vi.spyOn(performance, "now").mockReturnValue(1500);
       fireEvent.click(screen.getByTestId("select-fifty"));
-      fireEvent.click(screen.getByTestId("commit-interaction"));
       expect(setTtc).toHaveBeenCalledTimes(1);
       expect(setTtc).toHaveBeenCalledWith({ s1: 700 });
     });
 
-    test("does not bill time for a reported value on its own", () => {
-      // `getUpdatedTtc` ADDS the duration it is handed, so billing the whole elapsed time on every value
-      // a drag reports would charge the same seconds repeatedly. Only a completed interaction may bill.
+    test("does not re-charge the elapsed time for every value a drag reports", () => {
+      // `getUpdatedTtc` ADDS the duration it is handed, and a drag reports many values, so billing the
+      // whole time since mount each time would charge one interaction as if it were several. The start
+      // time is reset as each value is billed, so the values after the first cost nothing.
       const setTtc = vi.fn();
       render(<SliderElement {...defaultProps} ttc={{ s1: 200 } as TResponseTtc} setTtc={setTtc} />);
       vi.spyOn(performance, "now").mockReturnValue(1500);
       fireEvent.click(screen.getByTestId("select-min"));
       fireEvent.click(screen.getByTestId("select-fifty"));
       fireEvent.click(screen.getByTestId("select-max"));
-      expect(mockGetUpdatedTtc).not.toHaveBeenCalled();
-      expect(setTtc).not.toHaveBeenCalled();
+
+      expect(mockGetUpdatedTtc.mock.calls.map((call) => call[2])).toEqual([500, 0, 0]);
     });
 
-    test("bills a multi-value drag exactly once", () => {
+    test("bills a drag as one continuous span rather than as overlapping ones", () => {
+      // The durations billed across a whole drag must add up to the time the drag actually took: every
+      // segment starts where the previous one ended, so no instant is billed twice or lost.
       const setTtc = vi.fn();
       render(<SliderElement {...defaultProps} ttc={{} as TResponseTtc} setTtc={setTtc} />);
-      vi.spyOn(performance, "now").mockReturnValue(2000);
+      vi.spyOn(performance, "now").mockReturnValue(1200);
       fireEvent.click(screen.getByTestId("select-min"));
+      vi.spyOn(performance, "now").mockReturnValue(1500);
       fireEvent.click(screen.getByTestId("select-fifty"));
-      fireEvent.click(screen.getByTestId("commit-interaction"));
-      expect(setTtc).toHaveBeenCalledTimes(1);
-      expect(setTtc).toHaveBeenCalledWith({ s1: 1000 });
+      vi.spyOn(performance, "now").mockReturnValue(1600);
+      fireEvent.click(screen.getByTestId("select-max"));
+
+      const billed = mockGetUpdatedTtc.mock.calls.map((call) => call[2] as number);
+      expect(billed).toEqual([200, 300, 100]);
+      expect(billed.reduce((total, duration) => total + duration, 0)).toBe(600);
     });
 
     test("starts a new segment at the instant the previous one closed", () => {
       // One clock reading closes the finished segment and opens the next, so the instant between two
-      // interactions is neither billed twice nor lost.
+      // selections is neither billed twice nor lost.
       const setTtc = vi.fn();
       render(<SliderElement {...defaultProps} ttc={{} as TResponseTtc} setTtc={setTtc} />);
       vi.spyOn(performance, "now").mockReturnValue(1400);
-      fireEvent.click(screen.getByTestId("commit-interaction"));
+      fireEvent.click(screen.getByTestId("select-fifty"));
       vi.spyOn(performance, "now").mockReturnValue(1900);
-      fireEvent.click(screen.getByTestId("commit-interaction"));
+      fireEvent.click(screen.getByTestId("select-max"));
       expect(setTtc).toHaveBeenNthCalledWith(1, { s1: 400 });
       expect(mockGetUpdatedTtc).toHaveBeenLastCalledWith(expect.anything(), "s1", 500);
     });
@@ -588,11 +587,6 @@ describe("SliderElement", () => {
       const element = createMockSliderElement({ required: false });
       render(<SliderElement {...defaultProps} element={element} />);
       expect(screen.queryByTestId("required")).toBeNull();
-    });
-
-    test("forwards the localized unanswered label to the control", () => {
-      render(<SliderElement {...defaultProps} />);
-      expect(screen.getByTestId("unanswered-label").textContent).toBe("common.no_value_selected");
     });
 
     test("forwards an enabled value readout", () => {

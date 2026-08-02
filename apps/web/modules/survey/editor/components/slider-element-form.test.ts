@@ -14,14 +14,18 @@
  * the implementation it stands for.
  *
  * Verified behaviours:
- *  1. `readFiniteNumber` — an empty or unparseable field is not written, and a decimal step is
+ *  1. `readFiniteNumber` — the whole field is converted, so a partial or trailing-junk entry such as "1e"
+ *     or "12abc" is declined rather than written as the number it starts with; an empty field is declined
+ *     rather than read as zero; a decimal step and a complete exponent are accepted. The panel is
+ *     stateless, so a declined keystroke simply leaves the element's own value in place
  *  2. Per-element DOM ids — several Slider cards can be open without duplicate ids
  *  3. Range merges — editing the minimum preserves the maximum, and vice versa, without mutation
  *  4. Step updates — written as a bare `step`, never folded into `range`
  *  5. Internationalized label wiring — every key used by the panel exists in the default catalog
  *  6. Optional description — created on demand, and an emptied description stays editable
  *  7. Show-value toggle — defaults to on, and an explicit `false` persists
- *  8. Numeric input attributes — `type="number"` and a free step on all three, `min={0}` on step alone
+ *  8. Numeric input attributes — `type="number"` and a free step on all three, `min={0}` on step alone,
+ *     every value read straight from the element and no copy of a field held in the component
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -65,23 +69,33 @@ const inputBlocks: string[] = sourceCode
  * Kept in step with the source by the drift assertion in the suite below.
  */
 function readFiniteNumber(rawValue: string): number | null {
-  const parsed = Number.parseFloat(rawValue);
+  const trimmed = rawValue.trim();
+  if (trimmed === "") {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
 describe("SliderElementForm — readFiniteNumber", () => {
   test("the mirror matches the implementation in the source", () => {
-    // If either line changes, this fails and the mirror below has to be updated with it.
+    // If any of these lines change, this fails and the mirror above has to be updated with it.
     expect(sourceCode).toContain("const readFiniteNumber = (rawValue: string): number | null => {");
-    expect(sourceCode).toContain("const parsed = Number.parseFloat(rawValue);");
+    expect(sourceCode).toContain("const trimmed = rawValue.trim();");
+    expect(sourceCode).toContain("const parsed = Number(trimmed);");
     expect(sourceCode).toContain("return Number.isFinite(parsed) ? parsed : null;");
   });
 
-  test("does not use Number() or parseInt, either of which would corrupt a field", () => {
-    // `Number("")` is 0, which would silently rewrite a cleared bound to zero; `parseInt` would truncate
-    // a decimal step such as 0.5 to 0, which the schema then rejects as a non-positive step.
-    expect(sourceCode).not.toMatch(/Number\.parseInt|parseInt\(/);
-    expect(sourceCode).not.toMatch(/=\s*Number\(rawValue\)/);
+  test("converts the whole field rather than scanning it from the start", () => {
+    // A scanning parse keeps whatever precedes the first unusable character, so `parseFloat("1e")` is 1 and
+    // `parseFloat("12abc")` is 12 — a number the author never typed, written to the element as if they had.
+    // `parseInt` is equally unusable here: it would truncate a decimal step such as 0.5 to 0, which the
+    // schema then rejects as a non-positive step. The whole-field conversion below is the requirement, and
+    // the explicit empty check is what stops it from reading a cleared field as zero.
+    expect(sourceCode).not.toMatch(/parseFloat\s*\(/);
+    expect(sourceCode).not.toMatch(/parseInt\s*\(/);
+    expect(sourceCode).toMatch(/if \(trimmed === ""\) \{\s*return null;\s*\}/);
   });
 
   const parsedValues: { label: string; raw: string; expected: number }[] = [
@@ -113,6 +127,17 @@ describe("SliderElementForm — readFiniteNumber", () => {
     { label: "positive infinity", raw: "Infinity" },
     { label: "negative infinity", raw: "-Infinity" },
     { label: "the literal NaN", raw: "NaN" },
+    // Partial and trailing-junk fields. A scanning parse would accept almost all of these as the number
+    // they happen to start with — "1e" as 1, "12abc" as 12, "5px" as 5, "1,000" as 1, "0.5.2" as 0.5 —
+    // writing to the element a value the author never completed.
+    { label: "an exponent with no exponent digits", raw: "1e" },
+    { label: "an exponent with only a sign", raw: "1e-" },
+    { label: "digits followed by text", raw: "12abc" },
+    { label: "digits followed by a unit", raw: "5px" },
+    { label: "a thousands separator", raw: "1,000" },
+    { label: "a decimal followed by a second point", raw: "0.5.2" },
+    { label: "a doubled sign", raw: "--5" },
+    { label: "two numbers in one field", raw: "5 10" },
   ];
 
   test.each(rejectedValues)("declines to write $label", ({ raw }) => {
@@ -459,17 +484,25 @@ describe("SliderElementForm — numeric input attributes", () => {
     expect(flooredBlocks[0]).toContain("id={stepId}");
   });
 
-  test("feeds each numeric input from the element, with the in-progress draft taking precedence", () => {
-    // The element remains the single committed source of truth: a field shows the element's own number
-    // unless an edit is in progress, and the transient draft exists only so intermediate text such as ""
-    // or "-" survives long enough to finish typing a schema-valid negative or decimal value. Dropping the
-    // draft on blur is what puts the element back in charge, whether the edit committed or not.
-    expect(sourceCode).toContain("value={numericDrafts.min ?? element.range.min}");
-    expect(sourceCode).toContain("value={numericDrafts.max ?? element.range.max}");
-    expect(sourceCode).toContain("value={numericDrafts.step ?? element.step}");
-    expect(sourceCode).toContain("setNumericDrafts((previous) => ({ ...previous, [field]: null }))");
-    for (const field of ["min", "max", "step"]) {
-      expect(sourceCode).toContain(`handleNumericBlur("${field}")`);
+  test("feeds each numeric input straight from the element", () => {
+    // The element is the single source of truth for all three fields — each input renders the number the
+    // element itself stores, with nothing in between.
+    expect(sourceCode).toContain("value={element.range.min}");
+    expect(sourceCode).toContain("value={element.range.max}");
+    expect(sourceCode).toContain("value={element.step}");
+  });
+
+  test("keeps no copy of a field inside the component", () => {
+    // The prescribed pattern is stateless: local state mirroring a field would fork the source of truth,
+    // leaving the panel able to show one number while the element holds another, and would need a commit
+    // or revert step to reconcile the two. Every keystroke is instead either written through or dropped, so
+    // there is nothing to reconcile and no blur handler to reconcile it in.
+    expect(sourceCode).not.toMatch(/\buseState\b/);
+    expect(sourceCode).not.toMatch(/\buseReducer\b/);
+    expect(sourceCode).not.toMatch(/\buseRef\b/);
+    expect(sourceCode).not.toMatch(/onBlur/);
+    for (const block of inputBlocks) {
+      expect(block).not.toMatch(/value=\{[^}]*\?\?/);
     }
   });
 });

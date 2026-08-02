@@ -9,7 +9,6 @@
     "finish": "完成",
     "language_switch": "语言切换",
     "next": "下一步",
-    "no_value_selected": "未选择任何值",
     "open_in_new_tab": "在新标签页中打开",
     "people_responded": "{count, plural, one {1 人已回应} other {{count} 人已回应}}",
     "please_retry_now_or_try_again_later": "请立即重试或稍后再试。",

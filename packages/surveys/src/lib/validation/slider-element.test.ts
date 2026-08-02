@@ -9,8 +9,10 @@ import {
   ZSurveySliderElement,
 } from "@formbricks/types/surveys/elements";
 import type { TSurveySliderElement } from "@formbricks/types/surveys/elements";
-import { ZValidationRule, ZValidationRules } from "@formbricks/types/surveys/validation-rules";
+import { ZValidationRules } from "@formbricks/types/surveys/validation-rules";
+import type { TValidationRuleParams } from "@formbricks/types/surveys/validation-rules";
 import { validateBlockResponses, validateElementResponse } from "./evaluator";
+import { validators } from "./validators";
 
 // Mock translation function
 const mockT = vi.fn((key: string) => {
@@ -428,38 +430,6 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
       path: ["step"],
       message: "Step cannot be larger than the range",
     },
-    {
-      label: "two finite bounds whose span overflows to infinity",
-      range: { min: -Number.MAX_VALUE, max: Number.MAX_VALUE },
-      step: 1,
-      path: ["range"],
-      message: "The range is too wide to be represented",
-    },
-    {
-      label: "a step the range's magnitude swallows whole",
-      // At 1e30 the double nearest 1e30 + 1 is 1e30 itself, so the grid collapses to its origin.
-      range: { min: 0, max: 1e30 },
-      step: 1,
-      path: ["step"],
-      message: "Step is too small to be applied across the range",
-    },
-    {
-      label: "a step needing more decimal places than the grid rule can restate",
-      // Small enough magnitudes that the swallowing guard above passes, leaving the shared
-      // MAX_GRID_DECIMAL_SCALE limit as the only thing standing between the author and a slider whose
-      // every answer the grid rule would fail closed on.
-      range: { min: 0, max: 1e-300 },
-      step: 1e-301,
-      path: ["step"],
-      message: "Step is too precise to be validated",
-    },
-    {
-      label: "a grid origin needing more decimal places than the grid rule can restate",
-      range: { min: 1e-320, max: 100 },
-      step: 5,
-      path: ["range"],
-      message: "Minimum value is too precise to be validated",
-    },
   ];
 
   test.each(rejectionCases)("should reject $label", ({ range, step, path, message }) => {
@@ -495,20 +465,9 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
     ]);
   });
 
-  test("should reject a non-finite bound at the field itself", () => {
-    // `.finite()` on the bound fires before the refinements, so the author is pointed at `range.min`
-    // rather than at the range as a whole.
-    const parsed = parseSliderConfig({ range: { min: Number.NEGATIVE_INFINITY, max: 100 }, step: 5 });
-
-    expect(parsed.success).toBe(false);
-    if (parsed.success) {
-      throw new Error("Expected the configuration to be rejected, but it parsed successfully.");
-    }
-
-    expect(parsed.error.issues.some((issue) => issue.path.join(".") === "range.min")).toBe(true);
-  });
-
-  test("should reject a non-finite step at the field itself", () => {
+  test("should reject an infinite step through the span guard", () => {
+    // The frozen contract constrains the step's sign and its size against the span, and an infinite step
+    // is caught by the latter - so the author still gets one message, pointed at the field they typed.
     const parsed = parseSliderConfig({ range: { min: 0, max: 100 }, step: Number.POSITIVE_INFINITY });
 
     expect(parsed.success).toBe(false);
@@ -516,7 +475,34 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
       throw new Error("Expected the configuration to be rejected, but it parsed successfully.");
     }
 
-    expect(parsed.error.issues.some((issue) => issue.path.join(".") === "step")).toBe(true);
+    expect(parsed.error.issues).toHaveLength(1);
+    expect(parsed.error.issues[0].path).toEqual(["step"]);
+    expect(parsed.error.issues[0].message).toBe("Step cannot be larger than the range");
+  });
+
+  test("should reject a NaN bound or step, which `z.number()` refuses on its own", () => {
+    // Worth pinning because NaN defeats every comparison the refinements make: `NaN >= max`, `NaN <= 0`
+    // and `NaN > span` are all false, so the refinements alone would wave it through.
+    expect(parseSliderConfig({ range: { min: Number.NaN, max: 100 }, step: 5 }).success).toBe(false);
+    expect(parseSliderConfig({ range: { min: 0, max: 100 }, step: Number.NaN }).success).toBe(false);
+  });
+
+  test("should admit an infinite bound and leave the grid rule to fail closed on it", () => {
+    // The frozen contract states the bounds as plain numbers, so an infinite bound - reachable only
+    // through the management API, never through the editor - is a lawful configuration. It is recorded
+    // here because the safety property that matters is downstream: the grid rule this element injects
+    // takes its origin from `range.min`, and a non-finite origin makes it reject rather than silently
+    // stop constraining.
+    const parsed = parseSliderConfig({ range: { min: Number.NEGATIVE_INFINITY, max: 100 }, step: 5 });
+
+    expect(parsed.success).toBe(true);
+    expect(
+      validators.stepMultipleOf.check(
+        50,
+        { step: 5, offset: Number.NEGATIVE_INFINITY },
+        {} as TSurveySliderElement
+      ).valid
+    ).toBe(false);
   });
 
   // Positive controls. Without these the table above could be satisfied by a schema that rejects
@@ -543,49 +529,15 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
 /**
  * The grid rule is a security constraint: it is what rejects an off-grid value posted straight to a
  * response endpoint, bypassing the browser control entirely. The validator reaches its `step` and
- * `offset` through a cast, so the schema is the only thing standing between a malformed rule and a
- * validator object carrying no usable step at all.
+ * `offset` through a cast, and `params` is a plain, non-discriminated union - `{ min: 1 }` satisfies it
+ * through the `minValue` member - so a rule persisted with another rule's params can reach the grid
+ * validator carrying no usable step at all.
  *
- * `params` on its own is a plain, non-discriminated union, which is exactly why the coupling below is
- * needed rather than redundant - see the first test.
+ * The validator is therefore the layer that has to fail closed, and these cases hold it to that: the
+ * element schema constrains only its own fields, and no schema stands between a database column and the
+ * cast the validator performs.
  */
-describe("ZValidationRules couples stepMultipleOf with its own params and fails closed", () => {
-  const GRID_PARAMS_MESSAGE =
-    "stepMultipleOf requires a finite positive step and, when present, a finite offset";
-
-  /**
-   * Deliberately untyped `params`: half of these cases describe rules the type system forbids, which is
-   * precisely the shape that arrives from a database column or a request body.
-   */
-  const buildGridRule = (params: unknown, id = "grid-rule") => ({ id, type: "stepMultipleOf", params });
-
-  test("should be the only layer that catches params borrowed from another numeric rule", () => {
-    // `{ min: 1 }` satisfies the plain params union through its minValue member, so a single rule passes
-    // `ZValidationRule` while carrying no `step` whatsoever. Were the array schema not refined, the grid
-    // validator would receive that object cast to its own params type and read `step` as `undefined`.
-    const borrowedParams = buildGridRule({ min: 1 });
-
-    expect(ZValidationRule.safeParse(borrowedParams).success).toBe(true);
-
-    const parsed = ZValidationRules.safeParse([borrowedParams]);
-
-    expect(parsed.success).toBe(false);
-    if (parsed.success) {
-      throw new Error("Expected the rule list to be rejected, but it parsed successfully.");
-    }
-
-    expect(
-      parsed.error.issues.some(
-        (issue) =>
-          issue.code === "custom" &&
-          issue.message === GRID_PARAMS_MESSAGE &&
-          issue.path.length === 2 &&
-          issue.path[0] === 0 &&
-          issue.path[1] === "params"
-      )
-    ).toBe(true);
-  });
-
+describe("stepMultipleOf fails closed on params that describe no grid", () => {
   test.each([
     ["params carrying no step at all", {}],
     ["params carrying another rule's key instead of a step", { min: 1 }],
@@ -596,66 +548,35 @@ describe("ZValidationRules couples stepMultipleOf with its own params and fails 
     ["a NaN step", { step: Number.NaN }],
     ["an infinite offset beside a valid step", { step: 5, offset: Number.POSITIVE_INFINITY }],
     ["a NaN offset beside a valid step", { step: 5, offset: Number.NaN }],
-  ] as [string, unknown][])("should reject %s", (_label, params) => {
-    const parsed = ZValidationRules.safeParse([buildGridRule(params)]);
+  ] as [string, unknown][])("should reject an answer judged against %s", (_label, params) => {
+    // 50 is on the grid of every well-formed variant of these params, so a `true` here could only mean
+    // the constraint had stopped being applied at all.
+    const result = validators.stepMultipleOf.check(
+      50,
+      params as TValidationRuleParams,
+      {} as TSurveySliderElement
+    );
 
-    expect(parsed.success).toBe(false);
-    if (parsed.success) {
-      throw new Error("Expected the rule list to be rejected, but it parsed successfully.");
-    }
-
-    const coupling = parsed.error.issues.find((issue) => issue.code === "custom");
-
-    expect(coupling).toBeDefined();
-    expect(coupling?.path).toEqual([0, "params"]);
-    expect(coupling?.message).toBe(GRID_PARAMS_MESSAGE);
-  });
-
-  test("should point at the offending rule rather than at the first one", () => {
-    const parsed = ZValidationRules.safeParse([
-      { id: "min-rule", type: "minValue", params: { min: 1 } },
-      buildGridRule({ step: 0 }),
-    ]);
-
-    expect(parsed.success).toBe(false);
-    if (parsed.success) {
-      throw new Error("Expected the rule list to be rejected, but it parsed successfully.");
-    }
-
-    const coupling = parsed.error.issues.find((issue) => issue.code === "custom");
-
-    expect(coupling?.path).toEqual([1, "params"]);
-    expect(coupling?.message).toBe(GRID_PARAMS_MESSAGE);
+    expect(result.valid).toBe(false);
   });
 
   test.each([
     ["a step and an explicit offset", { step: 5, offset: 10 }],
     ["a step with the offset omitted", { step: 2.5 }],
     ["a negative offset, which anchors a grid below zero", { step: 5, offset: -10 }],
-  ] as [string, Record<string, number>][])("should accept %s", (_label, params) => {
-    const parsed = ZValidationRules.safeParse([buildGridRule(params)]);
-
-    expect(parsed.success).toBe(true);
-    if (!parsed.success) {
-      throw parsed.error;
-    }
-
-    // Round-tripped verbatim: the validator reads these two numbers directly, so neither may be
-    // defaulted, coerced or dropped on the way through.
-    expect(parsed.data).toEqual([{ id: "grid-rule", type: "stepMultipleOf", params }]);
+  ] as [string, TValidationRuleParams][])("should still judge %s normally", (_label, params) => {
+    expect(validators.stepMultipleOf.check(50, params, {} as TSurveySliderElement).valid).toBe(true);
   });
 
-  test("should leave every other rule type's behaviour unchanged", () => {
-    // The coupling is scoped to one rule type on purpose. `maxValue` paired with a minValue-shaped
-    // params object is tolerated exactly as it was before the grid rule existed, so the refinement
-    // tightens nothing it was not written to tighten.
+  test("should leave the rule list schema exactly as permissive as it was", () => {
+    // `ZValidationRules` is an unrefined array, as it is for every other rule type: the pairing is not
+    // enforced there, which is precisely why the validator above must fail closed.
+    expect(
+      ZValidationRules.safeParse([{ id: "grid-rule", type: "stepMultipleOf", params: { min: 1 } }]).success
+    ).toBe(true);
     expect(ZValidationRules.safeParse([{ id: "r1", type: "minValue", params: { min: 1 } }]).success).toBe(
       true
     );
-    expect(ZValidationRules.safeParse([{ id: "r1", type: "maxValue", params: { min: 1 } }]).success).toBe(
-      true
-    );
-    expect(ZValidationRules.safeParse([{ id: "r1", type: "email", params: {} }]).success).toBe(true);
     expect(ZValidationRules.safeParse([]).success).toBe(true);
   });
 });

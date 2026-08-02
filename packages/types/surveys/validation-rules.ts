@@ -88,12 +88,11 @@ export const ZValidationRuleParamsMaxValue = z.object({
 });
 
 // `offset` anchors the `step` grid at a non-zero origin - min=10/step=5 accepts 15 but rejects 12 - and
-// defaults to 0 when omitted. Both fields are constrained here because a grid is only defined for a finite,
-// strictly positive step and a finite origin; the validator then fails closed on params it cannot evaluate,
-// while the owning element schema still reports the single author-facing "Step must be greater than zero".
+// defaults to 0 when omitted. `step` is the required key that discriminates this member from every other
+// member of the params union.
 export const ZValidationRuleParamsStepMultipleOf = z.object({
-  step: z.number().finite().positive(),
-  offset: z.number().finite().optional(),
+  step: z.number(),
+  offset: z.number().optional(),
 });
 
 export const ZValidationRuleParamsMinSelections = z.object({
@@ -239,35 +238,8 @@ export const ZValidationRule = z.object({
 
 export type TValidationRule = z.infer<typeof ZValidationRule>;
 
-// Array of validation rules.
-// `params` is a plain (non-discriminated) union, so on its own it only proves that the params match
-// *some* rule type - `{ type: "stepMultipleOf", params: { min: 1 } }` satisfies it through the minValue
-// member, and the grid validator would then receive a cast object carrying no `step` at all. Grid
-// alignment is a security constraint (it is what rejects off-grid values posted straight to the response
-// endpoints), so the type/params pairing is verified here and fails closed instead of reaching the
-// validator as an unchecked cast. Only `stepMultipleOf` is coupled: every other rule type keeps its
-// existing behaviour byte-for-byte.
-// The explicit annotation is required rather than stylistic: refining this schema widens its inferred
-// type past the compiler's serialization limit, which surfaces as TS7056 in `js.ts` (that module embeds
-// the survey schemas). Annotating the export keeps the emitted type compact.
-export const ZValidationRules: z.ZodType<TValidationRule[], z.ZodTypeDef, TValidationRule[]> = z
-  .array(ZValidationRule)
-  .superRefine((rules, ctx) => {
-    rules.forEach((rule, index) => {
-      if (rule.type !== "stepMultipleOf") {
-        return;
-      }
-
-      if (!ZValidationRuleParamsStepMultipleOf.safeParse(rule.params).success) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "stepMultipleOf requires a finite positive step and, when present, a finite offset",
-          path: [index, "params"],
-        });
-      }
-    });
-  });
-
+// Array of validation rules
+export const ZValidationRules = z.array(ZValidationRule);
 export type TValidationRules = z.infer<typeof ZValidationRules>;
 
 // Applicable rules per element type - const arrays for type inference (must be defined before types)

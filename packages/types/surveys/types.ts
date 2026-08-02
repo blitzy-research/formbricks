@@ -3081,11 +3081,7 @@ const isInvalidOperatorsForElementType = (
         isInvalidOperator = true;
       }
       break;
-    // A slider answer is a single number on an author-configured grid, and comparing it is not something the
-    // editor offers: its logic-rule registry exposes exactly `isSubmitted` and `isSkipped`. The allow-list is
-    // restated here because this schema - not the editor - guards survey definitions created through the
-    // management API, where any other operator could otherwise be persisted and then evaluated against a
-    // value the runtime never compares.
+    // Mirrors Payment: the editor's logic-rule registry offers a slider exactly these two operators.
     case TSurveyElementTypeEnum.Slider:
       if (!["isSubmitted", "isSkipped"].includes(operator)) {
         isInvalidOperator = true;

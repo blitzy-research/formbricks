@@ -2,7 +2,6 @@
 
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { PlusIcon } from "lucide-react";
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TSurveySliderElement } from "@formbricks/types/surveys/elements";
 import { TSurvey } from "@formbricks/types/surveys/types";
@@ -28,20 +27,29 @@ interface SliderElementFormProps {
 }
 
 /**
- * Reads a numeric editor field, returning the value only when it parses to a finite number.
+ * Reads a numeric editor field, returning the value only when the WHOLE field is a finite number.
  *
- * `Number.parseFloat` is used rather than `Number` because `Number("")` is `0`, which would silently
- * rewrite a cleared field to zero, and rather than `parseInt` because the step may legitimately be a
- * decimal such as `0.5`. `null` tells the caller not to write, leaving the value already stored on the
- * element in place.
+ * The conversion is applied to the entire trimmed field rather than scanned from its start, because a
+ * scanning parse (`Number.parseFloat`) stops at the first character it cannot use and keeps what came
+ * before it: "1e" becomes 1 and "12abc" becomes 12, writing a number the author never typed. An empty or
+ * blank field is declined explicitly, since converting it would yield `0` and silently rewrite a cleared
+ * bound to zero. A decimal such as `0.5` and a complete exponent such as `1e3` are both whole numbers and
+ * are accepted; `parseInt` would truncate the former to a non-positive step the schema rejects.
+ *
+ * `null` tells the caller not to write, leaving the value already stored on the element in place.
  */
 const readFiniteNumber = (rawValue: string): number | null => {
-  const parsed = Number.parseFloat(rawValue);
+  const trimmed = rawValue.trim();
+  if (trimmed === "") {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-/** The three numeric fields, used to key the transient draft text held while one of them is being edited. */
-type NumericDraftField = "min" | "max" | "step";
+/** The three numeric fields the panel writes. */
+type NumericField = "min" | "max" | "step";
 
 export const SliderElementForm = ({
   element,
@@ -68,28 +76,13 @@ export const SliderElementForm = ({
   const rangeMaxId = `${element.id}-range-max`;
   const stepId = `${element.id}-step`;
 
-  // Transient draft text for the three numeric fields. A controlled numeric input whose `value` is read
-  // straight from the element cannot hold text that is not yet a number: clearing the field, or typing the
-  // leading "-" of a negative bound, parses to nothing, so nothing is written and React's
-  // restore-controlled-state pass immediately reassigns the previous number, erasing the keystroke. Both
-  // `-5` and `0.5` are schema-valid yet unreachable that way. Keeping the raw string here and echoing it
-  // back means the rendered value already matches what the DOM reports, so React assigns nothing and the
-  // browser keeps the intermediate text on screen.
-  //
-  // `null` means "no edit in progress, show the value stored on the element", which is what keeps the first
-  // render identical to reading the element's own numbers directly.
-  const [numericDrafts, setNumericDrafts] = useState<Record<NumericDraftField, string | null>>({
-    min: null,
-    max: null,
-    step: null,
-  });
-
-  // Records the keystroke, then writes to the element only when it parses to a finite number. A draft that
-  // does not parse - "", "-", "1e" - stays on screen and is simply not written, so the element never
-  // receives `NaN` and the last good value remains in place.
-  const handleNumericChange = (field: NumericDraftField, rawValue: string) => {
-    setNumericDrafts((previous) => ({ ...previous, [field]: rawValue }));
-
+  // Writes a numeric field straight to the element, holding no copy of the field in the component: each
+  // input renders the number the element itself stores and every keystroke that completes a number is
+  // written back, which is the pattern the payment panel's amount field establishes. A keystroke that does
+  // not complete a number is simply not written, so the element never receives `NaN` and the value already
+  // stored stays in place - and nothing is lost on screen by declining it, because a `type="number"` field
+  // reports an incomplete number as an empty string rather than as the characters typed so far.
+  const handleNumericChange = (field: NumericField, rawValue: string) => {
     const parsed = readFiniteNumber(rawValue);
     if (parsed === null) {
       return;
@@ -102,13 +95,6 @@ export const SliderElementForm = ({
     } else {
       updateElement(elementIdx, { step: parsed });
     }
-  };
-
-  // Dropping the draft on blur both commits and reverts: a draft that parsed has already been written, so
-  // the field simply re-renders the element's own value in canonical form, while a draft that never parsed
-  // was never written, so the field falls back to the value still stored on the element.
-  const handleNumericBlur = (field: NumericDraftField) => {
-    setNumericDrafts((previous) => ({ ...previous, [field]: null }));
   };
 
   return (
@@ -183,12 +169,9 @@ export const SliderElementForm = ({
               <Input
                 type="number"
                 id={rangeMinId}
-                value={numericDrafts.min ?? element.range.min}
+                value={element.range.min}
                 onChange={(e) => {
                   handleNumericChange("min", e.target.value);
-                }}
-                onBlur={() => {
-                  handleNumericBlur("min");
                 }}
                 step="any"
               />
@@ -202,12 +185,9 @@ export const SliderElementForm = ({
               <Input
                 type="number"
                 id={rangeMaxId}
-                value={numericDrafts.max ?? element.range.max}
+                value={element.range.max}
                 onChange={(e) => {
                   handleNumericChange("max", e.target.value);
-                }}
-                onBlur={() => {
-                  handleNumericBlur("max");
                 }}
                 step="any"
               />
@@ -223,12 +203,9 @@ export const SliderElementForm = ({
           <Input
             type="number"
             id={stepId}
-            value={numericDrafts.step ?? element.step}
+            value={element.step}
             onChange={(e) => {
               handleNumericChange("step", e.target.value);
-            }}
-            onBlur={() => {
-              handleNumericBlur("step");
             }}
             min={0}
             step="any"

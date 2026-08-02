@@ -95,6 +95,23 @@ function getProgressWidth(container: HTMLElement): string | null {
   return bar ? bar.style.width : null;
 }
 
+/**
+ * The average exactly as the card printed it, read from the average row itself.
+ *
+ * Searching the whole card by text is ambiguous once a range's own bounds are printed below the bar: a mean
+ * sitting on the grid origin renders the same string as the lower bound, and a page-wide query would then
+ * match two nodes and fail for a reason that has nothing to do with precision.
+ */
+function getAverageText(): string {
+  const label = screen.getByText("environments.surveys.summary.average");
+  const value = label.nextElementSibling;
+  if (!value) {
+    throw new Error("The average row rendered without a value beside its label.");
+  }
+
+  return value.textContent ?? "";
+}
+
 describe("SliderSummary", () => {
   afterEach(() => {
     cleanup();
@@ -176,13 +193,17 @@ describe("SliderSummary", () => {
   });
 
   /**
-   * Every case above configures an integer step, so all of them read the same two decimals every other
-   * summary card in this folder shows. These cases vary the step instead, because the displayed precision is
+   * Every case above configures a whole-number grid, so all of them read the same two decimals every other
+   * summary card in this folder shows. These cases vary the grid instead, because the displayed precision is
    * derived from it: the aggregator reports the mean at full double precision precisely so that the card can
    * decide here how much of it to show, and a range finer than 0.01 would otherwise be rounded away to
    * `0.00` before a reader ever saw it.
+   *
+   * The grid is both of the element's numbers, not just the step. Selectable values are `range.min +
+   * n * step`, so an offset origin contributes decimals of its own and the cases below cover it in both
+   * directions: an origin finer than the step, and a step finer than the origin.
    */
-  describe("display precision derived from the configured step", () => {
+  describe("display precision derived from the configured grid", () => {
     test("shows a mean on a range finer than two decimals rather than rounding it to zero", () => {
       render(
         <SliderSummary
@@ -231,8 +252,9 @@ describe("SliderSummary", () => {
     });
 
     test("renders rather than crashing when the step is finer than the displayed precision can express", () => {
-      // A lawful configuration: the element schema admits a step down to MAX_GRID_DECIMAL_SCALE (300)
-      // decimal places, while `toFixed` is specified only to 100. The card must clamp, not throw.
+      // A lawful configuration: the element schema constrains the step's sign and its size against the span
+      // but not its precision, while `toFixed` is specified only to 100 places. The card must clamp, not
+      // throw.
       expect(() =>
         render(
           <SliderSummary
@@ -247,6 +269,133 @@ describe("SliderSummary", () => {
       ).not.toThrow();
 
       expect(screen.getByText("environments.surveys.summary.average")).toBeInTheDocument();
+    });
+
+    test("renders rather than crashing when the grid origin is finer than the precision can express", () => {
+      // The same clamp, reached through the origin instead of the step: a lawful range may begin at a value
+      // needing 300 decimals while the step stays coarse, and `toFixed` is specified only to 100 places. The
+      // origin alone is what admits any decimals here at all - this step's scale is zero.
+      expect(() =>
+        render(
+          <SliderSummary
+            elementSummary={createSliderSummary({
+              average: 1e-300,
+              range: { min: 1e-300, max: 100 },
+              step: 5,
+            })}
+            survey={survey}
+          />
+        )
+      ).not.toThrow();
+
+      // Clamped to the hundred places `toFixed` allows rather than the three hundred the origin asks for.
+      expect(getAverageText()).toBe((1e-300).toFixed(100));
+    });
+
+    test("keeps the digits an offset origin contributes when the step alone is whole", () => {
+      // The grid of {min: 0.001, step: 5} is 0.001, 5.001, 10.001 - three decimals that come entirely from
+      // the origin. A cap taken from the step alone allows two, so this mean would read `2.50` and lose the
+      // only digits that place it between two grid points.
+      render(
+        <SliderSummary
+          elementSummary={createSliderSummary({
+            average: 2.501,
+            range: { min: 0.001, max: 100.001 },
+            step: 5,
+          })}
+          survey={survey}
+        />
+      );
+
+      expect(getAverageText()).toBe("2.501");
+    });
+
+    test("keeps them when the aggregator's own mean carries a floating-point remainder", () => {
+      // The same two answers as the case above, as the aggregation actually reports them. It folds responses
+      // newest-first with an incremental mean, so 5.001 is seen before 0.001 and the result is the nearest
+      // double to 2.501 rather than 2.501 itself. Its scale runs to 16 places, so the grid's cap decides:
+      // three grid decimals plus two. What matters is that the third decimal - the digit the origin
+      // contributes, and the one a step-derived cap would have rounded away to `2.50` - is still printed.
+      render(
+        <SliderSummary
+          elementSummary={createSliderSummary({
+            average: 2.5010000000000003,
+            range: { min: 0.001, max: 100.001 },
+            step: 5,
+          })}
+          survey={survey}
+        />
+      );
+
+      expect(getAverageText()).toBe("2.50100");
+    });
+
+    test("does not print a mean sitting on an offset origin as zero", () => {
+      // Every answer was the lowest selectable value. Rounded to the step's two places that reads `0.00`,
+      // which is not a value this Slider can even take.
+      render(
+        <SliderSummary
+          elementSummary={createSliderSummary({
+            average: 0.001,
+            range: { min: 0.001, max: 100.001 },
+            step: 5,
+          })}
+          survey={survey}
+        />
+      );
+
+      expect(getAverageText()).toBe("0.001");
+    });
+
+    test("still bounds an offset-grid mean two places past the grid", () => {
+      // The mean of 0.001, 5.001 and 5.001: an exact division whose own scale runs to 16 places. Widening the
+      // cap to admit the origin must not let those artefacts through - three grid decimals plus two.
+      render(
+        <SliderSummary
+          elementSummary={createSliderSummary({
+            average: 3.3343333333333334,
+            range: { min: 0.001, max: 100.001 },
+            step: 5,
+          })}
+          survey={survey}
+        />
+      );
+
+      expect(getAverageText()).toBe("3.33433");
+    });
+
+    test("reads an origin finer than its own step at the origin's precision", () => {
+      // {min: 0.005, step: 0.01} selects 0.005, 0.015, 0.025 - the origin is the finer of the two numbers, so
+      // it is the one that decides how much of the mean is worth showing.
+      render(
+        <SliderSummary
+          elementSummary={createSliderSummary({
+            average: 0.015,
+            range: { min: 0.005, max: 0.105 },
+            step: 0.01,
+          })}
+          survey={survey}
+        />
+      );
+
+      expect(getAverageText()).toBe("0.015");
+    });
+
+    test("leaves a whole-number grid at two decimals even when it is offset", () => {
+      // An offset origin only widens the cap when it is itself fractional; {min: 10, step: 5} must read
+      // exactly as every sibling card does.
+      render(
+        <SliderSummary
+          elementSummary={createSliderSummary({
+            average: 26,
+            range: { min: 10, max: 50 },
+            step: 5,
+          })}
+          survey={survey}
+        />
+      );
+
+      expect(getAverageText()).toBe("26.00");
     });
 
     test("resolves the bar across a range finer than the displayed precision", () => {

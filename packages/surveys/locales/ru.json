@@ -9,7 +9,6 @@
     "finish": "Завершить",
     "language_switch": "Переключение языка",
     "next": "Далее",
-    "no_value_selected": "Значение не выбрано",
     "open_in_new_tab": "Открыть в новой вкладке",
     "people_responded": "{count, plural, one {1 человек ответил} other {{count} человека ответили}}",
     "please_retry_now_or_try_again_later": "Пожалуйста, повторите попытку сейчас или попробуйте позже.",
