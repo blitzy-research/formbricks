@@ -385,10 +385,6 @@ export function ElementConditional({
           <SliderElement
             key={element.id}
             element={element}
-            // A slider answer is a bare number, so anything else - including the empty string a cleared
-            // response leaves behind - is passed through as `undefined` rather than coerced. That keeps an
-            // unanswered slider distinguishable from one answered with its minimum, which is what the
-            // required check and the summary's dismissed count both rely on.
             value={typeof value === "number" ? value : undefined}
             onChange={onChange}
             languageCode={languageCode}
