@@ -74,6 +74,7 @@
       "message": "您的响应未能提交，因为它被标记为自动活动。如果您是人类，请重试。",
       "title": "我们无法验证你是人类。"
     },
+    "step_multiple_of": "请输入以{step}为增量的值",
     "value_must_contain": "值必须包含{value}",
     "value_must_equal": "值必须等于{value}",
     "value_must_not_contain": "值不能包含{value}",

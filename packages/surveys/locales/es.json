@@ -74,6 +74,7 @@
       "message": "Su respuesta no pudo ser enviada porque fue marcada como actividad automatizada. Si respira, por favor inténtelo de nuevo.",
       "title": "No pudimos verificar que eres humano."
     },
+    "step_multiple_of": "Por favor, introduce un valor en incrementos de {step}",
     "value_must_contain": "El valor debe contener {value}",
     "value_must_equal": "El valor debe ser igual a {value}",
     "value_must_not_contain": "El valor no debe contener {value}",

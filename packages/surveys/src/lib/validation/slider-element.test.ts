@@ -288,7 +288,9 @@ describe("slider answers of the wrong shape are rejected whether or not the elem
     const result = validateElementResponse(element, value, "en");
 
     expect(result.valid).toBe(false);
-    expect(result.errors[0].ruleId).toBe("sliderValueType");
+    // One mistake, one error: the shape check owns a wrongly typed answer outright, so neither the range
+    // rules nor the grid rule - which also fail closed on a non-number - restate the same complaint.
+    expect(result.errors.map((error) => error.ruleId)).toEqual(["sliderValueType"]);
     expect(result.errors[0].message).toBe("errors.invalid_format");
 
     // ...and through the shared block entrypoint every response route reaches, which is where a wrongly
@@ -296,7 +298,7 @@ describe("slider answers of the wrong shape are rejected whether or not the elem
     const errorMap = validateBlockResponses([element], { [OPTIONAL_ELEMENT_ID]: value }, "en");
 
     expect(Object.keys(errorMap)).toEqual([OPTIONAL_ELEMENT_ID]);
-    expect(errorMap[OPTIONAL_ELEMENT_ID][0].ruleId).toBe("sliderValueType");
+    expect(errorMap[OPTIONAL_ELEMENT_ID].map((error) => error.ruleId)).toEqual(["sliderValueType"]);
   });
 
   test("should keep a genuinely unanswered optional slider valid", () => {

@@ -539,13 +539,20 @@ export const validateElementResponse = (
   // the numeric rules would have coerced it, and a value submitted against an untrustworthy configuration is
   // rejected rather than left unconstrained. Only reached when the required check stayed silent, so an
   // unanswered required slider still reports exactly one "required" error. At most one of the two gates
-  // fires. Collected into `errors` up front, both execution paths below inherit it: AND logic appends to it
-  // and OR logic reports invalid while `errors` is non-empty.
+  // fires, and whichever does ends the evaluation.
   if (!requiredError) {
     const sliderError =
       checkSliderValueType(element, value, t) ?? checkSliderConfiguration(element, value, t);
     if (sliderError) {
       errors.push(sliderError);
+      // One mistake, one error. Returning here - rather than falling through to the rules - is what keeps
+      // that true: the injected grid rule also fails closed on a non-number, so continuing would restate
+      // the same complaint, and for NaN the two range rules would additionally report the contradictory
+      // pair "at least {min}" and "no greater than {max}". The gate already carries the accurate reason,
+      // and everything the rules would add is downstream of a value that has no numeric meaning at all.
+      // The validators' own fail-closed policy is deliberately left untouched, so they remain
+      // authoritative for any caller that reaches the rule engine without passing through this gate.
+      return { valid: false, errors };
     }
   }
 

@@ -723,12 +723,27 @@ describe("validateElementResponse", () => {
       const result = validateElementResponse(buildSliderElement(false), value, "en");
 
       expect(result.valid).toBe(false);
-      // The value-type gate runs before any rule, so it is always reported first. The step-grid rule the
-      // evaluator injects from the element's own configuration also fails closed on a non-number, so the
-      // total error count is deliberately not pinned here - the gate's identity and message are.
-      expect(result.errors[0].ruleId).toBe("sliderValueType");
+      // One mistake, one error: the value-type gate ends the evaluation, so the injected range and grid
+      // rules - which also fail closed on a non-number - never restate the same complaint. The count is
+      // pinned deliberately; without it NaN reported four errors including the contradictory pair
+      // "at least 0" and "no greater than 100".
+      expect(result.errors.map((error) => error.ruleId)).toEqual(["sliderValueType"]);
       expect(result.errors[0].message).toBe("errors.invalid_format");
     });
+
+    test.each(wrongTypedValues)(
+      "should report exactly one error for %s submitted for a required slider",
+      (_label, value) => {
+        const result = validateElementResponse(buildSliderElement(true), value, "en");
+
+        expect(result.valid).toBe(false);
+        // Exactly one owning check reports: the required check when the shape reads as unanswered - pinned
+        // by name in its own test below - and the shape gate otherwise. Never both, and never with
+        // injected-rule noise appended to either.
+        expect(result.errors).toHaveLength(1);
+        expect(["required", "sliderValueType"]).toContain(result.errors[0].ruleId);
+      }
+    );
 
     test.each([
       ["an in-range number", 50],
@@ -825,7 +840,7 @@ describe("validateElementResponse", () => {
         const errorMap = validateBlockResponses(elements, { slider1: value }, "en");
 
         expect(Object.keys(errorMap)).toEqual(["slider1"]);
-        expect(errorMap.slider1[0].ruleId).toBe("sliderValueType");
+        expect(errorMap.slider1.map((error) => error.ruleId)).toEqual(["sliderValueType"]);
       }
     });
 
@@ -833,9 +848,8 @@ describe("validateElementResponse", () => {
       const result = validateElementResponse(buildSliderElement(true), "50", "en");
 
       expect(result.valid).toBe(false);
-      const ruleIds = result.errors.map((error) => error.ruleId);
-      expect(ruleIds[0]).toBe("sliderValueType");
-      expect(ruleIds).not.toContain("required");
+      // The gate is the single owning check: no required error, and no injected range or grid rule either.
+      expect(result.errors.map((error) => error.ruleId)).toEqual(["sliderValueType"]);
     });
 
     test("should not apply the numeric contract to other element types", () => {
@@ -862,7 +876,7 @@ describe("validateElementResponse", () => {
       const errorMap = validateBlockResponses(elements, responses, "en");
 
       expect(Object.keys(errorMap)).toEqual(["slider1"]);
-      expect(errorMap.slider1[0].ruleId).toBe("sliderValueType");
+      expect(errorMap.slider1.map((error) => error.ruleId)).toEqual(["sliderValueType"]);
       expect(getFirstErrorMessage(errorMap, "slider1")).toBe("errors.invalid_format");
     });
   });

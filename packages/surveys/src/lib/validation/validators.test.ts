@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import type { TFunction } from "i18next";
 import { describe, expect, test, vi } from "vitest";
-import { TSurveyElementTypeEnum } from "@formbricks/types/surveys/elements";
+import { MAX_GRID_DECIMAL_SCALE, isWithinGridDecimalScale } from "@formbricks/types/surveys/constants";
+import { TSurveyElementTypeEnum, ZSurveySliderElement } from "@formbricks/types/surveys/elements";
 import type { TSurveyElement } from "@formbricks/types/surveys/elements";
 import { validators } from "./validators";
 
@@ -568,6 +569,110 @@ describe("validators", () => {
       // anyway, so it is rejected rather than guessed at.
       const denormal = validators.stepMultipleOf.check(Number.MIN_VALUE, { step: 5 }, {} as TSurveyElement);
       expect(denormal.valid).toBe(false);
+    });
+
+    // The grid test and the element schema that injects it share one scale limit, and the guarantee that
+    // limit exists to protect is "what the schema publishes, this rule can judge". These cases hold the two
+    // layers against each other so the limit cannot silently drift apart again: the constant, the schema
+    // guard and the validator all come from `@formbricks/types/surveys/validation-rules`.
+    describe("shared grid scale limit", () => {
+      const buildConfiguration = (min: number, max: number, step: number): Record<string, unknown> => ({
+        id: "slider1",
+        type: TSurveyElementTypeEnum.Slider,
+        headline: { default: "Pick a value" },
+        required: true,
+        range: { min, max },
+        step,
+      });
+
+      // A step of exactly 1e-300 needs MAX_GRID_DECIMAL_SCALE (300) decimal places; 1e-301 needs one more.
+      const finestJudgeableStep = Number(`1e-${String(MAX_GRID_DECIMAL_SCALE)}`);
+      const unjudgeableStep = Number(`1e-${String(MAX_GRID_DECIMAL_SCALE + 1)}`);
+
+      test("should judge a grid at exactly the shared scale limit", () => {
+        expect(isWithinGridDecimalScale(finestJudgeableStep)).toBe(true);
+        // The first point above the origin is on the grid; half a step past it is not.
+        expect(
+          validators.stepMultipleOf.check(
+            finestJudgeableStep,
+            { step: finestJudgeableStep },
+            {} as TSurveyElement
+          ).valid
+        ).toBe(true);
+        expect(
+          validators.stepMultipleOf.check(
+            finestJudgeableStep * 1.5,
+            { step: finestJudgeableStep },
+            {} as TSurveyElement
+          ).valid
+        ).toBe(false);
+      });
+
+      test("should keep a configuration at the limit both schema-valid and answerable", () => {
+        const parsed = ZSurveySliderElement.safeParse(
+          buildConfiguration(0, finestJudgeableStep * 10, finestJudgeableStep)
+        );
+
+        expect(parsed.success).toBe(true);
+        expect(
+          validators.stepMultipleOf.check(
+            finestJudgeableStep,
+            { step: finestJudgeableStep, offset: 0 },
+            {} as TSurveyElement
+          ).valid
+        ).toBe(true);
+      });
+
+      test("should reject a step finer than the limit at the schema, not leave it unanswerable", () => {
+        expect(isWithinGridDecimalScale(unjudgeableStep)).toBe(false);
+
+        const parsed = ZSurveySliderElement.safeParse(
+          buildConfiguration(0, unjudgeableStep * 10, unjudgeableStep)
+        );
+
+        expect(parsed.success).toBe(false);
+        expect(parsed.success ? [] : parsed.error.issues.map((issue) => issue.message)).toEqual([
+          "Step is too precise to be validated",
+        ]);
+      });
+
+      test("should reject an origin finer than the limit, since the origin anchors the grid", () => {
+        const parsed = ZSurveySliderElement.safeParse(buildConfiguration(unjudgeableStep, 1, 0.1));
+
+        expect(parsed.success).toBe(false);
+        expect(parsed.success ? [] : parsed.error.issues.map((issue) => issue.message)).toEqual([
+          "Minimum value is too precise to be validated",
+        ]);
+        // ...which is exactly the operand the rule would have failed closed on.
+        expect(
+          validators.stepMultipleOf.check(0.1, { step: 0.1, offset: unjudgeableStep }, {} as TSurveyElement)
+            .valid
+        ).toBe(false);
+      });
+
+      test("should leave every ordinary configuration answerable at its own first grid point", () => {
+        const ordinary: [number, number, number][] = [
+          [0, 100, 5],
+          [0, 1, 0.1],
+          [10, 50, 5],
+          [0, 1000, 0.01],
+          [0, 10, 10],
+          [-50, 50, 5],
+          [-10, 10, 2.5],
+          [0, 1e15, 1e9],
+          [0.05, 1, 0.01],
+        ];
+
+        for (const [min, max, step] of ordinary) {
+          const parsed = ZSurveySliderElement.safeParse(buildConfiguration(min, max, step));
+          expect(parsed.success).toBe(true);
+          for (const value of [min, min + step, max]) {
+            expect(
+              validators.stepMultipleOf.check(value, { step, offset: min }, {} as TSurveyElement).valid
+            ).toBe(true);
+          }
+        }
+      });
     });
 
     test("should not let an enormous step buy an enormous tolerance", () => {

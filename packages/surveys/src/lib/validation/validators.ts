@@ -1,5 +1,6 @@
 import type { TFunction } from "i18next";
 import type { TResponseDataValue } from "@formbricks/types/responses";
+import { isWithinGridDecimalScale } from "@formbricks/types/surveys/constants";
 import type { TSurveyElement } from "@formbricks/types/surveys/elements";
 import type {
   TValidationRuleParams,
@@ -72,12 +73,6 @@ const parseNumericValue = (value: TResponseDataValue): number | null => {
   return null;
 };
 
-// Largest number of decimal places the grid test will scale to. The residual distance to the nearest grid
-// point is converted back to a double by dividing by 10 ** scale, and 10 ** 309 is already Infinity, so an
-// operand needing a finer scale cannot be judged and is rejected instead of guessed at. Nothing usable is
-// lost: a step that fine cannot be applied across any range the element schema accepts, because its
-// precision guard rejects a step the range's own magnitude cannot represent.
-const MAX_GRID_DECIMAL_SCALE = 300;
 // Residual tolerance expressed in units of the last representable bit of the value being judged. Rounding a
 // single multiply-add costs two to three of those units, so eight leaves headroom without ever reaching a
 // neighbouring grid point.
@@ -107,9 +102,15 @@ interface TScaledDecimal {
  * fraction 0.200000000000000011102230246251565... Comparing those decimals is what makes a 0.1 grid accept
  * 0.3, and it is exact: no digit of the printed form is discarded, so the returned pair describes the
  * operand and nothing else.
+ *
+ * The scale limit is not decided here: `isWithinGridDecimalScale` is the one definition of it, shared with
+ * the element schemas that inject this rule, so a configuration the schema publishes can always be judged
+ * and one it rejects is the only kind this fails closed on.
  */
 const toScaledDecimal = (value: number): TScaledDecimal | null => {
-  if (!Number.isFinite(value)) {
+  // Fail closed on any operand the shared grid contract cannot state exactly: a non-finite value, or one
+  // needing more decimal places than MAX_GRID_DECIMAL_SCALE.
+  if (!isWithinGridDecimalScale(value)) {
     return null;
   }
 
@@ -127,8 +128,6 @@ const toScaledDecimal = (value: number): TScaledDecimal | null => {
     // digits so every operand ends up with a non-negative scale and the three can share one.
     digits *= 10n ** BigInt(-scale);
     scale = 0;
-  } else if (scale > MAX_GRID_DECIMAL_SCALE) {
-    return null;
   }
 
   return { digits: sign === "-" ? -digits : digits, scale };

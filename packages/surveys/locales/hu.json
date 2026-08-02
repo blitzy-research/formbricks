@@ -74,6 +74,7 @@
       "message": "A válaszát nem sikerült elküldeni, mert automatizált tevékenységként lett megjelölve. Ha lélegzik, akkor próbálja meg újra.",
       "title": "Nem tudtuk ellenőrizni, hogy Ön ember-e."
     },
+    "step_multiple_of": "Adjon meg egy értéket {step} nagyságú lépésekben",
     "value_must_contain": "Az értéknek tartalmaznia kell ezt: {value}",
     "value_must_equal": "Az értéknek egyenlőnek kell lennie ezzel: {value}",
     "value_must_not_contain": "Az érték nem tartalmazhatja ezt: {value}",

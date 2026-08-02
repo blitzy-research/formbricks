@@ -74,6 +74,7 @@
       "message": "Ditt svar kunde inte skickas eftersom det flaggades som automatiserad aktivitet. Om du andas, försök igen.",
       "title": "Vi kunde inte verifiera att du är en människa."
     },
+    "step_multiple_of": "Ange ett värde i steg om {step}",
     "value_must_contain": "Värdet måste innehålla {value}",
     "value_must_equal": "Värdet måste vara {value}",
     "value_must_not_contain": "Värdet får inte innehålla {value}",

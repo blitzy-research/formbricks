@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ZStorageUrl, ZUrl } from "../common";
 import { ZI18nString } from "../i18n";
 import { ZAllowedFileExtension } from "../storage";
-import { TSurveyElementTypeEnum } from "./constants";
+import { TSurveyElementTypeEnum, isWithinGridDecimalScale } from "./constants";
 import { FORBIDDEN_IDS } from "./validation";
 import { ZValidationRules } from "./validation-rules";
 
@@ -442,6 +442,31 @@ export const ZSurveySliderElement = ZSurveyElementBase.extend({
       code: z.ZodIssueCode.custom,
       message: "Step is too small to be applied across the range",
       path: ["step"],
+    });
+    return;
+  }
+
+  // Evaluability guard: the shared `stepMultipleOf` rule this element injects decides grid alignment by
+  // restating the value, the step and the grid's origin as exact decimals, and it fails closed on an operand
+  // needing more decimal places than MAX_GRID_DECIMAL_SCALE. Accepting such a configuration would publish a
+  // slider on which *no* answer could ever validate - not even `range.min + step` - so the two layers are
+  // held to the one shared limit: what this schema admits, the grid test can always judge.
+  if (!isWithinGridDecimalScale(data.step)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Step is too precise to be validated",
+      path: ["step"],
+    });
+    return;
+  }
+
+  // `range.min` anchors the grid, so an origin that cannot be stated exactly disqualifies every value just
+  // as an unstatable step does.
+  if (!isWithinGridDecimalScale(data.range.min)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Minimum value is too precise to be validated",
+      path: ["range"],
     });
   }
 });
