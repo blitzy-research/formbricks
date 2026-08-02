@@ -1086,23 +1086,22 @@ export const getElementSummary = async (
           }
         });
 
-        // `convertFloatTo2Decimal` multiplies by 100 before rounding, which overflows to Infinity above
-        // roughly 1.79e306. Past MAX_SAFE_INTEGER a double carries no fractional digits at all, so
-        // skipping the rounding there is exact rather than a compromise.
-        const roundedAverage =
-          Math.abs(runningAverage) < Number.MAX_SAFE_INTEGER
-            ? convertFloatTo2Decimal(runningAverage)
-            : runningAverage;
-
         summary.push({
           type: element.type,
           element,
           responseCount: totalResponseCount,
+          // The mean is reported at full double precision rather than rounded to two decimals. A
+          // Slider's range is author-configured and may be finer than 0.01 - a {0, 0.001} range with
+          // step 0.0001 is a valid configuration - so rounding here would collapse every mean on such
+          // a range to 0 and destroy the number before the presentation layer ever sees it. Rounding
+          // for display is the summary card's concern, where the configured step is available to
+          // derive an appropriate precision from.
+          //
           // Seeding the mean at 0 already reports 0 for an element with no numeric answers, so no NaN
           // fallback is needed for the empty set. The finiteness check keeps the contract declared by
           // `ZSurveyElementSummarySlider` (`average: z.number().finite()`) satisfied even for
           // pathological legacy response data that the current bounds would no longer accept.
-          average: Number.isFinite(roundedAverage) ? roundedAverage : 0,
+          average: Number.isFinite(runningAverage) ? runningAverage : 0,
           dismissed: {
             count: dismissed,
           },

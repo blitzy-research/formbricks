@@ -3081,10 +3081,15 @@ const isInvalidOperatorsForElementType = (
         isInvalidOperator = true;
       }
       break;
-    // A slider carries no operator restriction here; the editor's logic-rule registry is what limits the
-    // operators an author can choose. The case is deliberately inert and is kept only because
-    // @typescript-eslint/switch-exhaustiveness-check requires every element type to be matched.
+    // A slider answer is a single number on an author-configured grid, and comparing it is not something the
+    // editor offers: its logic-rule registry exposes exactly `isSubmitted` and `isSkipped`. The allow-list is
+    // restated here because this schema - not the editor - guards survey definitions created through the
+    // management API, where any other operator could otherwise be persisted and then evaluated against a
+    // value the runtime never compares.
     case TSurveyElementTypeEnum.Slider:
+      if (!["isSubmitted", "isSkipped"].includes(operator)) {
+        isInvalidOperator = true;
+      }
       break;
     case TSurveyElementTypeEnum.CTA:
       if (!["isClicked", "isNotClicked"].includes(operator)) {

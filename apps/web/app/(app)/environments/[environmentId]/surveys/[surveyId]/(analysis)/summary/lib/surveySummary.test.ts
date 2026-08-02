@@ -4830,7 +4830,7 @@ describe("Slider question type tests", () => {
     return summary[0] as TSliderSummary;
   };
 
-  test("getQuestionSummary correctly processes Slider question with valid responses", async () => {
+  test("getElementSummary correctly processes Slider question with valid responses", async () => {
     const summary = await summarizeSlider([
       createResponse("response-1", { [sliderElementId]: 0 }),
       createResponse("response-2", { [sliderElementId]: 50 }),
@@ -4846,13 +4846,13 @@ describe("Slider question type tests", () => {
     expect(summary.dismissed.count).toBe(0);
   });
 
-  test("getQuestionSummary reports only the fields the Slider summary contract declares", async () => {
+  test("getElementSummary reports only the fields the Slider summary contract declares", async () => {
     const summary = await summarizeSlider([createResponse("response-1", { [sliderElementId]: 40 })]);
 
     expect(Object.keys(summary).sort()).toEqual(["average", "dismissed", "element", "responseCount", "type"]);
   });
 
-  test("getQuestionSummary counts a Slider answered with zero as a response", async () => {
+  test("getElementSummary counts a Slider answered with zero as a response", async () => {
     // The response also carries time on the element, so a truthiness test instead of a type test would
     // misclassify this answer as a dismissal.
     const summary = await summarizeSlider([
@@ -4864,7 +4864,7 @@ describe("Slider question type tests", () => {
     expect(summary.dismissed.count).toBe(0);
   });
 
-  test("getQuestionSummary ignores a non-numeric Slider answer", async () => {
+  test("getElementSummary ignores a non-numeric Slider answer", async () => {
     const summary = await summarizeSlider([createResponse("response-1", { [sliderElementId]: "50" })]);
 
     expect(summary.responseCount).toBe(0);
@@ -4872,7 +4872,7 @@ describe("Slider question type tests", () => {
     expect(summary.dismissed.count).toBe(0);
   });
 
-  test("getQuestionSummary handles Slider question with dismissed responses", async () => {
+  test("getElementSummary handles Slider question with dismissed responses", async () => {
     const summary = await summarizeSlider([
       createResponse("response-1", { [sliderElementId]: 20 }, { [sliderElementId]: 3 }),
       createResponse("response-2", {}, { [sliderElementId]: 2 }),
@@ -4884,7 +4884,7 @@ describe("Slider question type tests", () => {
     expect(summary.dismissed.count).toBe(2);
   });
 
-  test("getQuestionSummary does not count a Slider as dismissed without time on the element", async () => {
+  test("getElementSummary does not count a Slider as dismissed without time on the element", async () => {
     const summary = await summarizeSlider([
       createResponse("response-1", {}, { [sliderElementId]: 0 }),
       createResponse("response-2", {}, { "another-element": 5 }),
@@ -4895,7 +4895,7 @@ describe("Slider question type tests", () => {
     expect(summary.dismissed.count).toBe(0);
   });
 
-  test("getQuestionSummary handles Slider question with no responses", async () => {
+  test("getElementSummary handles Slider question with no responses", async () => {
     const summary = await summarizeSlider([createResponse("response-1", { "another-element": "value" })]);
 
     expect(summary.responseCount).toBe(0);
@@ -4906,7 +4906,7 @@ describe("Slider question type tests", () => {
     expect(summary.dismissed.count).toBe(0);
   });
 
-  test("getQuestionSummary handles Slider question when the survey has no responses at all", async () => {
+  test("getElementSummary handles Slider question when the survey has no responses at all", async () => {
     const summary = await summarizeSlider([]);
 
     expect(summary.responseCount).toBe(0);
@@ -4915,7 +4915,7 @@ describe("Slider question type tests", () => {
     expect(summary.dismissed.count).toBe(0);
   });
 
-  test("getQuestionSummary averages raw values for a Slider range that does not start at zero", async () => {
+  test("getElementSummary averages raw values for a Slider range that does not start at zero", async () => {
     const summary = await summarizeSlider(
       [
         createResponse("response-1", { [sliderElementId]: 10 }),
@@ -4930,7 +4930,7 @@ describe("Slider question type tests", () => {
     expect(summary.element.range).toEqual({ min: 10, max: 50 });
   });
 
-  test("getQuestionSummary rounds the Slider average to two decimals", async () => {
+  test("getElementSummary reports the Slider average unrounded", async () => {
     const summary = await summarizeSlider([
       createResponse("response-1", { [sliderElementId]: 10 }),
       createResponse("response-2", { [sliderElementId]: 10 }),
@@ -4938,8 +4938,38 @@ describe("Slider question type tests", () => {
     ]);
 
     expect(summary.responseCount).toBe(3);
-    // 31 / 3 = 10.333… rounded to two decimals.
-    expect(summary.average).toBe(10.33);
+    // The exact mean, not a two-decimal approximation of it. Rounding here would be lossy for any range
+    // finer than 0.01, so the precision the author configured is preserved through to the summary card,
+    // which derives how many decimals to display from the element's own step.
+    expect(summary.average).toBe(31 / 3);
+    expect(summary.average).not.toBe(10.33);
+  });
+
+  test("getElementSummary preserves a Slider average on a range finer than two decimals", async () => {
+    // A {0, 0.001} range with step 0.0001 is a schema-valid configuration. Rounding the mean to two
+    // decimals would report 0 for every possible answer on it, erasing the question's entire range.
+    const summary = await summarizeSlider(
+      [
+        createResponse("response-1", { [sliderElementId]: 0 }),
+        createResponse("response-2", { [sliderElementId]: 0.001 }),
+      ],
+      createSliderElement({ range: { min: 0, max: 0.001 }, step: 0.0001 })
+    );
+
+    expect(summary.responseCount).toBe(2);
+    expect(summary.average).toBe(0.0005);
+    expect(summary.average).not.toBe(0);
+  });
+
+  test("getElementSummary preserves a single fine-grained Slider answer", async () => {
+    const summary = await summarizeSlider(
+      [createResponse("response-1", { [sliderElementId]: 0.001 })],
+      createSliderElement({ range: { min: 0, max: 0.001 }, step: 0.0001 })
+    );
+
+    expect(summary.responseCount).toBe(1);
+    // A single answer is its own mean, so this reports the submitted value verbatim.
+    expect(summary.average).toBe(0.001);
   });
 });
 
@@ -5052,9 +5082,9 @@ describe("Slider question type numerical stability tests", () => {
   test("getElementSummary keeps a huge Slider average away from the x100 rounding helper", async () => {
     // This suite mocks `convertFloatTo2Decimal` with a `toFixed`-based implementation that cannot
     // overflow, so the production helper's `Math.round(num * 100) / 100` hazard is invisible through
-    // the returned value alone. Asserting that a magnitude beyond MAX_SAFE_INTEGER never reaches the
-    // helper guards it instead: at that scale a double carries no fractional digits, so rounding is a
-    // no-op whose only effect would be to overflow to Infinity.
+    // the returned value alone. Asserting that the average never reaches the helper guards it instead.
+    // The Slider aggregation reports its mean unrounded precisely because rounding is lossy on a range
+    // finer than 0.01, and that same routing is what keeps this magnitude away from the x100 overflow.
     const largeValue = 9e306;
     const survey = buildSliderSurvey({ min: 0, max: largeValue }, largeValue);
     const responses = buildSliderResponses([largeValue]);
@@ -5072,7 +5102,7 @@ describe("Slider question type numerical stability tests", () => {
     expect(summary[0].average).toBe(largeValue);
   });
 
-  test("getElementSummary rounds the Slider average to two decimals within an offset range", async () => {
+  test("getElementSummary reports the Slider average unrounded within an offset range", async () => {
     const survey = buildSliderSurvey({ min: 10, max: 50 }, 5);
     const responses = buildSliderResponses([10, 15, 25]);
 
@@ -5085,7 +5115,28 @@ describe("Slider question type numerical stability tests", () => {
 
     expect(summary).toHaveLength(1);
     expect(summary[0].responseCount).toBe(3);
-    // (10 + 15 + 25) / 3 = 16.6666... -> 16.67
-    expect(summary[0].average).toBe(16.67);
+    // (10 + 15 + 25) / 3 = 16.666..., reported exactly rather than approximated as 16.67.
+    expect(summary[0].average).toBe(50 / 3);
+    expect(summary[0].average).not.toBe(16.67);
+  });
+
+  test("getElementSummary keeps a Slider mean finer than two decimals on an offset grid", async () => {
+    // A grid whose origin and step are both finer than 0.01. The mean lands exactly on a grid point here,
+    // so rounding it to two decimals would move it OFF the grid the answers came from - 0.015 became
+    // 0.02 through the production helper - rather than merely blurring it.
+    const survey = buildSliderSurvey({ min: 0.005, max: 0.105 }, 0.01);
+    const responses = buildSliderResponses([0.005, 0.015, 0.025]);
+
+    const summary: any = await getElementSummary(
+      survey,
+      getElementsFromBlocks(survey.blocks),
+      responses,
+      buildDropOff(3)
+    );
+
+    expect(summary).toHaveLength(1);
+    expect(summary[0].responseCount).toBe(3);
+    expect(summary[0].average).toBe(0.015);
+    expect(summary[0].average).not.toBe(0.02);
   });
 });

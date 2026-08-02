@@ -573,8 +573,11 @@ describe("validators", () => {
 
     // The grid test and the element schema that injects it share one scale limit, and the guarantee that
     // limit exists to protect is "what the schema publishes, this rule can judge". These cases hold the two
-    // layers against each other so the limit cannot silently drift apart again: the constant, the schema
-    // guard and the validator all come from `@formbricks/types/surveys/validation-rules`.
+    // layers against each other so the limit cannot silently drift apart again: the limit
+    // `MAX_GRID_DECIMAL_SCALE` and the `isWithinGridDecimalScale` predicate that applies it both come from
+    // `@formbricks/types/surveys/constants`, and both the schema guard inside `ZSurveySliderElement`
+    // (`@formbricks/types/surveys/elements`) and this package's own `stepMultipleOf` validator call that
+    // predicate.
     describe("shared grid scale limit", () => {
       const buildConfiguration = (min: number, max: number, step: number): Record<string, unknown> => ({
         id: "slider1",

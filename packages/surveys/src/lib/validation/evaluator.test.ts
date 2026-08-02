@@ -702,21 +702,25 @@ describe("validateElementResponse", () => {
         showValue: true,
       }) as unknown as TSurveySliderElement;
 
-    const wrongTypedValues: [string, TResponseDataValue][] = [
-      ["a numeric string", "50"],
-      ["a partially numeric string", "50junk"],
-      ["a non-numeric string", "abc"],
-      ["an array", ["50"]],
-      ["a record", { value: "50" }],
-      ["NaN", Number.NaN],
-      ["Infinity", Number.POSITIVE_INFINITY],
+    // The third column names the check that owns the error when the slider is *required*, so the required
+    // expectations below can be exact per row rather than "one of two": the required check owns the shapes
+    // the generic emptiness helper reads as unanswered, and the shape gate owns every other present value.
+    // On an optional slider the shape gate always owns it, because no required check runs ahead of it.
+    const wrongTypedValues: [string, TResponseDataValue, "required" | "sliderValueType"][] = [
+      ["a numeric string", "50", "sliderValueType"],
+      ["a partially numeric string", "50junk", "sliderValueType"],
+      ["a non-numeric string", "abc", "sliderValueType"],
+      ["an array", ["50"], "sliderValueType"],
+      ["a record", { value: "50" }, "sliderValueType"],
+      ["NaN", Number.NaN, "sliderValueType"],
+      ["Infinity", Number.POSITIVE_INFINITY, "sliderValueType"],
       // The three rows below are values the generic emptiness helper classifies as "empty" because that is
       // the right reading for the text and choice contracts. For this contract they are present values of
       // the wrong type, and treating them as absent on an *optional* slider would skip the gate and every
       // injected rule, persisting a non-numeric answer.
-      ["an empty string", ""],
-      ["an empty array", []],
-      ["an empty record", {}],
+      ["an empty string", "", "required"],
+      ["an empty array", [], "required"],
+      ["an empty record", {}, "required"],
     ];
 
     test.each(wrongTypedValues)("should reject %s submitted for a slider", (_label, value) => {
@@ -733,15 +737,13 @@ describe("validateElementResponse", () => {
 
     test.each(wrongTypedValues)(
       "should report exactly one error for %s submitted for a required slider",
-      (_label, value) => {
+      (_label, value, owningCheck) => {
         const result = validateElementResponse(buildSliderElement(true), value, "en");
 
         expect(result.valid).toBe(false);
-        // Exactly one owning check reports: the required check when the shape reads as unanswered - pinned
-        // by name in its own test below - and the shape gate otherwise. Never both, and never with
-        // injected-rule noise appended to either.
-        expect(result.errors).toHaveLength(1);
-        expect(["required", "sliderValueType"]).toContain(result.errors[0].ruleId);
+        // Exactly one owning check reports, named per row: never both the required check and the shape
+        // gate, and never with injected-rule noise appended to either.
+        expect(result.errors.map((error) => error.ruleId)).toEqual([owningCheck]);
       }
     );
 

@@ -18,20 +18,29 @@ const defaultProps = {
   onChange: vi.fn(),
 };
 
+// Decimal places an operand needs, read from the shortest decimal string that round-trips back to it, the
+// way the shared response validator reads its own operands. Exponential form is read rather than ignored,
+// because that is how a fine step prints: `String(1e-7)` is `"1e-7"`, which needs seven places and not none.
+const operandScale = (operand: number): number => {
+  const notation = /^-?\d+(?:\.(?<fraction>\d+))?(?:e(?<exponent>[+-]\d+))?$/i.exec(String(operand));
+  const fraction = notation?.groups?.fraction ?? "";
+  const exponent = notation?.groups?.exponent ?? "0";
+  return Math.max(0, fraction.length - Number(exponent));
+};
+
 // Independent grid check, deliberately written the way the shared response validator decides grid
 // membership rather than by reusing the component's own arithmetic: value, origin and step are scaled to
 // integers by their shared decimal scale and compared with integer remainders, because `%` is unusable on
 // decimals - `(0.9 - 0) % 0.3` evaluates to 0.29999999999999993.
 const isOnGrid = (value: number, min: number, step: number): boolean => {
-  const decimals = Math.max(
-    ...[value, min, step].map((operand) => (String(operand).split(".")[1] ?? "").length)
-  );
+  const decimals = Math.max(...[value, min, step].map(operandScale));
   const scale = 10 ** decimals;
   return (Math.round(value * scale) - Math.round(min * scale)) % Math.round(step * scale) === 0;
 };
 
-// Locates the primitive's root - the element a track press lands on. It carries no role of its own, so it
-// is reached through its data-slot hook, and a missing root fails loudly instead of being asserted away.
+// Locates the slider root - the element a track press lands on and the rect every pointer position is
+// measured against. It carries no role of its own, so it is reached through its data-slot hook, and a
+// missing root fails loudly instead of being asserted away.
 const getSliderRoot = (container: HTMLElement): Element => {
   const root = container.querySelector('[data-slot="slider"]');
   if (!root) {
@@ -197,9 +206,9 @@ describe("Slider", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Value selection tests — the primitive owns the keyboard contract, so the
-  // wrapper is exercised through it rather than through a pointer drag, whose
-  // layout measurements are unavailable in this environment
+  // Value selection tests — the keyboard is exercised first because it needs no
+  // layout measurement, and this environment reports a zero-sized rect for every
+  // element; the pointer path is covered further down against a stubbed rect
   // -------------------------------------------------------------------------
 
   test("calls onChange with the next on-grid value on ArrowRight", () => {
@@ -241,12 +250,12 @@ describe("Slider", () => {
   // -------------------------------------------------------------------------
   // Grid alignment
   //
-  // The primitive rounds a movement to the nearest step and then clamps the
-  // result into [min, max], so a span that is not a whole number of steps lets
-  // that clamp land between grid points: 0 to 100 by 40 reports 100 while the
-  // grid is 0, 40 and 80. The shared response validator rejects such a value
-  // because (100 - 0) / 40 is not an integer, so the control must reposition
-  // every emitted value onto the grid before it reaches the response.
+  // A span that is not a whole number of steps has its last grid point below
+  // `max`: 0 to 100 by 40 gives 0, 40 and 80. The shared response validator
+  // rejects 100 for that configuration because (100 - 0) / 40 is not an integer,
+  // so no interaction may resolve to `max` by clamping — every value the control
+  // reports is counted in whole steps from `min` and capped at the last grid
+  // point, which is what these tests pin.
   // -------------------------------------------------------------------------
 
   test("emits the last grid point rather than the maximum on End when the span is not divisible", () => {
@@ -276,8 +285,8 @@ describe("Slider", () => {
   test("emits the last grid point when a pointer press lands at the maximum", () => {
     const { container } = render(<Slider {...defaultProps} step={40} />);
     const root = getSliderRoot(container);
-    // The environment reports a zero-sized rect, so the primitive's pointer arithmetic needs a real one
-    // before a press at the far right can resolve to the maximum
+    // The environment reports a zero-sized rect, so the pointer arithmetic needs a real one before a press
+    // at the far right can resolve to the maximum
     vi.spyOn(root, "getBoundingClientRect").mockReturnValue({
       width: 100,
       height: 8,
@@ -346,16 +355,110 @@ describe("Slider", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Selecting the minimum from the unanswered state
+  // Fine and offset grids
   //
-  // An unanswered control parks its thumb at `min`, and the primitive reports a
-  // change only when the next value differs from the one it holds, so every
-  // interaction that resolves to `min` is suppressed. These tests cover the
-  // recovery that makes the minimum — the value a range starting at 0 needs
-  // most — directly selectable, and prove it never emits twice.
+  // Deciding how precisely to state a movement from `String(step)` alone would
+  // destroy exactly the two configurations the element schema admits and these
+  // tests describe. A step that prints in exponential form — `String(1e-7)` is
+  // `"1e-7"` — would read as no decimal places at all, so every movement would
+  // be rounded to a whole number and the whole range would collapse onto its
+  // integer bounds. And a grid whose origin is finer than its step, 0.005 by
+  // 0.01, would have that origin rounded to the step's coarser scale, so the
+  // configured minimum itself would be unselectable. The control therefore
+  // moves in whole step positions, where the arithmetic is exact integer work,
+  // reads the scale the origin and the step actually need — exponent included —
+  // and resolves each position back to the value it stands for.
   // -------------------------------------------------------------------------
 
-  test("commits the parked minimum on a first pointer press", () => {
+  test("reaches the first step of a grid finer than a whole number", () => {
+    render(<Slider {...defaultProps} min={0} max={0.001} step={1e-7} />);
+    const thumb = screen.getByRole("slider");
+    fireEvent.keyDown(thumb, { key: "ArrowRight" });
+    fireEvent.keyUp(thumb, { key: "ArrowRight" });
+    expect(defaultProps.onChange).toHaveBeenCalledWith(1e-7);
+  });
+
+  test("reaches the maximum of a grid finer than a whole number", () => {
+    render(<Slider {...defaultProps} min={0} max={0.001} step={1e-7} />);
+    fireEvent.keyDown(screen.getByRole("slider"), { key: "End" });
+    expect(defaultProps.onChange).toHaveBeenCalledWith(0.001);
+  });
+
+  test("steps a grid finer than a whole number without collapsing onto its bounds", () => {
+    render(<Slider {...defaultProps} min={0} max={0.001} step={1e-7} value={0.0005} />);
+    const thumb = screen.getByRole("slider");
+    fireEvent.keyDown(thumb, { key: "ArrowRight" });
+    expect(defaultProps.onChange).toHaveBeenCalledWith(0.0005001);
+    fireEvent.keyDown(thumb, { key: "ArrowLeft" });
+    expect(defaultProps.onChange).toHaveBeenCalledWith(0.0004999);
+  });
+
+  test("announces a fine grid as values rather than as step coordinates", () => {
+    const { container } = render(<Slider {...defaultProps} min={0} max={0.001} step={1e-7} value={0.0005} />);
+    const thumb = screen.getByRole("slider");
+    // The coordinate behind this answer is step 5000 of 10000, which must never surface
+    expect(thumb).toHaveAttribute("aria-valuemin", "0");
+    expect(thumb).toHaveAttribute("aria-valuemax", "0.001");
+    expect(thumb).toHaveAttribute("aria-valuenow", "0.0005");
+    expect(container.querySelector("output")).toHaveTextContent("0.0005");
+  });
+
+  test("selects the configured minimum of a grid whose origin is finer than its step", () => {
+    render(<Slider {...defaultProps} min={0.005} max={0.105} step={0.01} value={0.105} />);
+    fireEvent.keyDown(screen.getByRole("slider"), { key: "Home" });
+    expect(defaultProps.onChange).toHaveBeenCalledWith(0.005);
+    expect(defaultProps.onChange).not.toHaveBeenCalledWith(0.015);
+  });
+
+  test("commits the parked minimum of a grid whose origin is finer than its step", () => {
+    render(<Slider {...defaultProps} min={0.005} max={0.105} step={0.01} />);
+    const thumb = screen.getByRole("slider");
+    fireEvent.keyDown(thumb, { key: "Home" });
+    fireEvent.keyUp(thumb, { key: "Home" });
+    expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
+    expect(defaultProps.onChange).toHaveBeenCalledWith(0.005);
+  });
+
+  test("steps a grid whose origin is finer than its step from the origin", () => {
+    render(<Slider {...defaultProps} min={0.005} max={0.105} step={0.01} value={0.005} />);
+    fireEvent.keyDown(screen.getByRole("slider"), { key: "ArrowRight" });
+    expect(defaultProps.onChange).toHaveBeenCalledWith(0.015);
+  });
+
+  test.each([
+    ["a grid finer than a whole number", 0, 0.001, 1e-7],
+    ["a grid whose origin is finer than its step", 0.005, 0.105, 0.01],
+  ])("only ever emits an in-range, on-grid value for %s", (_label, min, max, step) => {
+    render(<Slider {...defaultProps} min={min} max={max} step={step} />);
+    const thumb = screen.getByRole("slider");
+    for (const key of ["End", "PageDown", "ArrowRight", "PageUp", "Home", "ArrowLeft", "ArrowUp"]) {
+      fireEvent.keyDown(thumb, { key });
+      fireEvent.keyUp(thumb, { key });
+    }
+    expect(defaultProps.onChange).toHaveBeenCalled();
+    const emitted = defaultProps.onChange.mock.calls.map((call) => Number(call[0]));
+    for (const value of emitted) {
+      expect(value).toBeGreaterThanOrEqual(min);
+      expect(value).toBeLessThanOrEqual(max);
+      expect(isOnGrid(value, min, step)).toBe(true);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Selecting the minimum from the unanswered state
+  //
+  // An unanswered control parks its thumb at `min` without holding a value, so an
+  // interaction resolving to `min` has to report it — treating it as "no change"
+  // would leave the minimum, the value a range starting at 0 needs most, entirely
+  // unselectable. Once a value IS held, a repeat of that same value is suppressed,
+  // which is the distinction the closing tests of this section pin. Every value
+  // asserted here is computed from the interaction itself: nothing is inferred
+  // from an interaction having produced no value, because an inference like that
+  // cannot tell a deliberate selection of the minimum from a key press that was
+  // never handled at all.
+  // -------------------------------------------------------------------------
+
+  test("selects the minimum on a first pointer press", () => {
     const { container } = render(<Slider {...defaultProps} />);
     const root = getSliderRoot(container);
     fireEvent.pointerDown(root, { pointerId: 1 });
@@ -364,7 +467,7 @@ describe("Slider", () => {
     expect(defaultProps.onChange).toHaveBeenCalledWith(0);
   });
 
-  test("commits the parked minimum on a first press of the thumb itself", () => {
+  test("selects the minimum on a first press of the thumb itself", () => {
     render(<Slider {...defaultProps} />);
     const thumb = screen.getByRole("slider");
     fireEvent.pointerDown(thumb, { pointerId: 1 });
@@ -373,7 +476,7 @@ describe("Slider", () => {
     expect(defaultProps.onChange).toHaveBeenCalledWith(0);
   });
 
-  test("commits the parked minimum on a first touch press", () => {
+  test("selects the minimum on a first touch press", () => {
     const { container } = render(<Slider {...defaultProps} />);
     const root = getSliderRoot(container);
     fireEvent.pointerDown(root, { pointerId: 1, pointerType: "touch" });
@@ -382,7 +485,7 @@ describe("Slider", () => {
     expect(defaultProps.onChange).toHaveBeenCalledWith(0);
   });
 
-  test("commits a non-zero minimum on a first pointer press", () => {
+  test("selects a non-zero minimum on a first pointer press", () => {
     const { container } = render(<Slider {...defaultProps} min={10} max={50} />);
     const root = getSliderRoot(container);
     fireEvent.pointerDown(root, { pointerId: 1 });
@@ -391,7 +494,7 @@ describe("Slider", () => {
     expect(defaultProps.onChange).toHaveBeenCalledWith(10);
   });
 
-  test("commits the parked minimum on Home", () => {
+  test("selects the minimum on Home", () => {
     render(<Slider {...defaultProps} />);
     const thumb = screen.getByRole("slider");
     fireEvent.keyDown(thumb, { key: "Home" });
@@ -400,7 +503,7 @@ describe("Slider", () => {
     expect(defaultProps.onChange).toHaveBeenCalledWith(0);
   });
 
-  test("commits the parked minimum on a backward arrow key", () => {
+  test("selects the minimum on a backward arrow key", () => {
     render(<Slider {...defaultProps} />);
     const thumb = screen.getByRole("slider");
     fireEvent.keyDown(thumb, { key: "ArrowLeft" });
@@ -409,7 +512,7 @@ describe("Slider", () => {
     expect(defaultProps.onChange).toHaveBeenCalledWith(0);
   });
 
-  test("commits the parked minimum on PageDown", () => {
+  test("selects the minimum on PageDown", () => {
     render(<Slider {...defaultProps} />);
     const thumb = screen.getByRole("slider");
     fireEvent.keyDown(thumb, { key: "PageDown" });
@@ -418,9 +521,9 @@ describe("Slider", () => {
     expect(defaultProps.onChange).toHaveBeenCalledWith(0);
   });
 
-  test("commits the parked minimum on the backward arrow key in RTL", () => {
-    // The primitive decides which arrow moves backward, so the recovery is
-    // driven by what it reported rather than by the key itself
+  test("selects the minimum on the backward arrow key in RTL", () => {
+    // The control inverts the horizontal arrows itself under RTL, so ArrowRight is
+    // the backward key here and a backward step from the park clamps to the minimum
     render(<Slider {...defaultProps} dir="rtl" />);
     const thumb = screen.getByRole("slider");
     fireEvent.keyDown(thumb, { key: "ArrowRight" });
@@ -439,9 +542,9 @@ describe("Slider", () => {
   });
 
   test("does not re-emit a control already answered with the minimum", () => {
-    // The recovery exists only for the unanswered state: once the value is
-    // present the primitive is authoritative, so a press that resolves to the
-    // value it already holds reports nothing and nothing is committed either
+    // Reporting the minimum unprompted belongs to the unanswered state only: once a
+    // value is held, an interaction resolving to that same value reports nothing and
+    // commits nothing, so no redundant response is written
     const { container } = render(<Slider {...defaultProps} value={0} />);
     const root = getSliderRoot(container);
     const thumb = screen.getByRole("slider");
@@ -498,12 +601,12 @@ describe("Slider", () => {
     const root = getSliderRoot(container);
     fireEvent.pointerDown(root, { pointerId: 1 });
     fireEvent.pointerUp(root, { pointerId: 1 });
-    // The recovered parked minimum is a completed interaction too
+    // Selecting the minimum from the unanswered state is a completed interaction too
     expect(onValueCommit).toHaveBeenCalledTimes(1);
     expect(onValueCommit).toHaveBeenCalledWith(0);
   });
 
-  test("reports the repositioned grid point rather than the value the primitive clamped", () => {
+  test("reports the last grid point rather than the configured maximum", () => {
     const onValueCommit = vi.fn();
     render(<Slider {...defaultProps} step={40} onValueCommit={onValueCommit} />);
     const thumb = screen.getByRole("slider");
@@ -603,7 +706,7 @@ describe("Slider", () => {
     expect(screen.getByRole("slider")).toHaveClass("bg-brand");
   });
 
-  test("does not commit the parked minimum when disabled", () => {
+  test("selects nothing when disabled", () => {
     const { container } = render(<Slider {...defaultProps} disabled />);
     const root = getSliderRoot(container);
     const thumb = screen.getByRole("slider");
@@ -619,7 +722,7 @@ describe("Slider", () => {
     const root = container.querySelector('[data-slot="slider"]');
     expect(root).toHaveAttribute("aria-disabled", "true");
     // The state has to reach the element that carries role="slider", because the
-    // primitive's root is a role-less span
+    // root is a role-less span
     expect(screen.getByRole("slider")).toHaveAttribute("aria-disabled", "true");
   });
 
@@ -730,9 +833,9 @@ describe("Slider", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Accessibility wiring — the primitive renders its root as a role-less span
-  // and puts role="slider" on the thumb, so the control's identity, name and
-  // state are asserted on the role-bearing element
+  // Accessibility wiring — the root is a role-less span and role="slider" sits on
+  // the thumb, per the WAI-ARIA slider pattern, so the control's identity, name
+  // and state are asserted on the role-bearing element
   // -------------------------------------------------------------------------
 
   test("exposes the headline as the accessible name of the control", () => {
@@ -747,9 +850,9 @@ describe("Slider", () => {
 
   test("does not label the control with an element that cannot be labelled", () => {
     const { container } = render(<Slider {...defaultProps} description="Slide to choose a value" />);
-    // The primitive's root is a span, so the header renders its headline and
-    // description as plain text instead of as labels bound to an element no
-    // label can address; the control carries its own accessible name instead
+    // The root is a span, so the header renders its headline and description as
+    // plain text instead of as labels bound to an element no label can address;
+    // the control carries its own accessible name instead
     expect(container.querySelector("label")).toBeNull();
     expect(screen.getByText("How satisfied are you?")).toBeInTheDocument();
     expect(screen.getByText("Slide to choose a value")).toBeInTheDocument();
@@ -813,8 +916,8 @@ describe("Slider", () => {
   // -------------------------------------------------------------------------
   // Unanswered announcement
   //
-  // The primitive parks the thumb at the minimum while the response value is
-  // undefined, so `aria-valuenow` alone reads exactly like a slider genuinely
+  // The thumb is parked at the minimum while the response value is undefined,
+  // so `aria-valuenow` alone reads exactly like a slider genuinely
   // answered with the minimum. `aria-valuetext` is what keeps the two states
   // distinguishable for a screen-reader user, and it is localized by the caller.
   // -------------------------------------------------------------------------
@@ -875,8 +978,8 @@ describe("Slider", () => {
   // these shapes can reach a respondent through a saved survey. They are
   // covered here because this component is also rendered from props it cannot
   // vouch for — an editor preview of a half-configured element, or any direct
-  // consumer of the component library — and because the primitive derives the
-  // thumb offset and the aria-value* attributes arithmetically, so a single
+  // consumer of the component library — and because the thumb offset and the
+  // aria-value* attributes are derived arithmetically, so a single
   // non-finite input would otherwise propagate into the DOM and leave an
   // inoperable control rather than a degraded one.
   // -------------------------------------------------------------------------
@@ -971,5 +1074,240 @@ describe("Slider", () => {
     fireEvent.keyDown(screen.getByRole("slider"), { key: "ArrowRight" });
     expect(defaultProps.onChange).toHaveBeenCalledWith(55);
     expect(Number.isFinite(defaultProps.onChange.mock.calls[0][0])).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // Computed values, thumb geometry and direction
+  //
+  // Three failure modes survive every assertion above: reporting a value the
+  // control never computed, reporting one the thumb does not actually move to,
+  // and moving the thumb the wrong way in a right-to-left survey. Each of the
+  // three is a wrong number in a response rather than a visual blemish, so each
+  // gets its own group. Pointer arithmetic needs a real rect, which this
+  // environment does not provide, so the geometry is stubbed per test.
+  // -------------------------------------------------------------------------
+
+  /** Pins the root's rect - reported as zero-sized here - so a pressed position maps to a known value. */
+  const stubRootRect = (container: HTMLElement, width = 200, left = 0): Element => {
+    const root = getSliderRoot(container);
+    vi.spyOn(root, "getBoundingClientRect").mockReturnValue({
+      width,
+      height: 8,
+      left,
+      top: 0,
+      right: left + width,
+      bottom: 8,
+      x: left,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    return root;
+  };
+
+  describe("computed values", () => {
+    test("steps up from the park rather than reporting the park itself", () => {
+      // The regression this group exists for: a forward key press from the unanswered
+      // state must report the first grid point above the minimum. Reporting the
+      // minimum would mean the value came from the thumb's parked position instead of
+      // from the key that was pressed.
+      render(<Slider {...defaultProps} />);
+      fireEvent.keyDown(screen.getByRole("slider"), { key: "ArrowRight" });
+      expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
+      expect(defaultProps.onChange).toHaveBeenCalledWith(5);
+      expect(defaultProps.onChange).not.toHaveBeenCalledWith(0);
+    });
+
+    test("steps up from a non-zero minimum by one increment", () => {
+      render(<Slider {...defaultProps} min={10} max={50} />);
+      fireEvent.keyDown(screen.getByRole("slider"), { key: "ArrowRight" });
+      expect(defaultProps.onChange).toHaveBeenCalledWith(15);
+    });
+
+    test("resolves a press to the value under the pointer, not to the minimum", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+      const root = stubRootRect(container);
+      fireEvent.pointerDown(root, { pointerId: 1, clientX: 100 });
+      expect(defaultProps.onChange).toHaveBeenCalledWith(50);
+    });
+
+    test.each([
+      [0, 0],
+      [50, 25],
+      [100, 50],
+      [150, 75],
+      [200, 100],
+    ])("resolves a press at %ipx across a 200px track to %i", (clientX, expected) => {
+      const { container } = render(<Slider {...defaultProps} />);
+      const root = stubRootRect(container);
+      fireEvent.pointerDown(root, { pointerId: 1, clientX });
+      expect(defaultProps.onChange).toHaveBeenCalledWith(expected);
+    });
+
+    test("snaps a press between grid points onto the nearest one", () => {
+      // 94px of 200px is 47, which no step-5 grid point occupies
+      const { container } = render(<Slider {...defaultProps} />);
+      const root = stubRootRect(container);
+      fireEvent.pointerDown(root, { pointerId: 1, clientX: 94 });
+      expect(defaultProps.onChange).toHaveBeenCalledWith(45);
+    });
+
+    test("clamps a press beyond the track to the nearest end", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+      const root = stubRootRect(container);
+      fireEvent.pointerDown(root, { pointerId: 1, clientX: -80 });
+      expect(defaultProps.onChange).toHaveBeenLastCalledWith(0);
+      fireEvent.pointerMove(root, { pointerId: 1, clientX: 900 });
+      expect(defaultProps.onChange).toHaveBeenLastCalledWith(100);
+    });
+
+    test("reports every value a drag crosses and commits only the last", () => {
+      const onValueCommit = vi.fn();
+      const { container } = render(<Slider {...defaultProps} onValueCommit={onValueCommit} />);
+      const root = stubRootRect(container);
+      fireEvent.pointerDown(root, { pointerId: 1, clientX: 0 });
+      fireEvent.pointerMove(root, { pointerId: 1, clientX: 100 });
+      fireEvent.pointerMove(root, { pointerId: 1, clientX: 200 });
+      fireEvent.pointerUp(root, { pointerId: 1, clientX: 200 });
+      expect(defaultProps.onChange.mock.calls.map((call) => Number(call[0]))).toEqual([0, 50, 100]);
+      expect(onValueCommit).toHaveBeenCalledTimes(1);
+      expect(onValueCommit).toHaveBeenCalledWith(100);
+    });
+
+    test("ignores a pointer move that never began on the control", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+      const root = stubRootRect(container);
+      fireEvent.pointerMove(root, { pointerId: 1, clientX: 100 });
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+
+    test("ignores a pointer that is not the one the interaction began with", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+      const root = stubRootRect(container);
+      fireEvent.pointerDown(root, { pointerId: 1, clientX: 0 });
+      defaultProps.onChange.mockClear();
+      fireEvent.pointerMove(root, { pointerId: 2, clientX: 200 });
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+
+    test("resolves a press to the grid origin when the track has no measurable width", () => {
+      const { container } = render(<Slider {...defaultProps} min={10} max={50} />);
+      const root = stubRootRect(container, 0);
+      fireEvent.pointerDown(root, { pointerId: 1, clientX: 25 });
+      expect(defaultProps.onChange).toHaveBeenCalledWith(10);
+    });
+  });
+
+  describe("thumb geometry", () => {
+    test("parks the thumb at the start of the track while unanswered", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+      const thumb = screen.getByRole("slider");
+      expect(thumb.getAttribute("style")).toContain("0%");
+      expect(container.querySelector('[data-slot="slider-range"]')?.getAttribute("style")).toContain(
+        "inset-inline-end: 100%"
+      );
+    });
+
+    test("places the thumb halfway along the track for the middle value", () => {
+      const { container } = render(<Slider {...defaultProps} value={50} />);
+      // The thumb is pulled back by half its own width at the midpoint so it stays
+      // inside the track it points at
+      expect(screen.getByRole("slider").getAttribute("style")).toBe("inset-inline-start: calc(50% - 10px);");
+      expect(container.querySelector('[data-slot="slider-range"]')?.getAttribute("style")).toContain(
+        "inset-inline-end: 50%"
+      );
+    });
+
+    test("places the thumb at the end of the track for the maximum", () => {
+      const { container } = render(<Slider {...defaultProps} value={100} />);
+      expect(screen.getByRole("slider").getAttribute("style")).toBe("inset-inline-start: calc(100% - 20px);");
+      expect(container.querySelector('[data-slot="slider-range"]')?.getAttribute("style")).toContain(
+        "inset-inline-end: 0%"
+      );
+    });
+
+    test("positions the thumb from the value rather than from the range it sits in", () => {
+      // A 10..50 range answered with 20 is a quarter of the way along, not a fifth
+      render(<Slider {...defaultProps} min={10} max={50} value={20} />);
+      expect(screen.getByRole("slider").getAttribute("style")).toBe("inset-inline-start: calc(25% - 5px);");
+    });
+
+    test("positions with logical properties so the track mirrors under RTL", () => {
+      // `inset-inline-start` resolves to the leading edge in both directions, which is
+      // why no direction-specific arithmetic appears anywhere in the component
+      const { container } = render(<Slider {...defaultProps} value={50} />);
+      const thumbStyle = screen.getByRole("slider").getAttribute("style") ?? "";
+      const rangeStyle = container.querySelector('[data-slot="slider-range"]')?.getAttribute("style") ?? "";
+      expect(thumbStyle).toContain("inset-inline-start");
+      expect(thumbStyle).not.toMatch(/(?:^|[\s;])(?:left|right):/);
+      expect(rangeStyle).not.toMatch(/(?:^|[\s;])(?:left|right):/);
+    });
+  });
+
+  describe("direction handling", () => {
+    test("moves forward on ArrowLeft and backward on ArrowRight under RTL", () => {
+      render(<Slider {...defaultProps} dir="rtl" value={50} />);
+      const thumb = screen.getByRole("slider");
+      fireEvent.keyDown(thumb, { key: "ArrowLeft" });
+      expect(defaultProps.onChange).toHaveBeenLastCalledWith(55);
+      fireEvent.keyDown(thumb, { key: "ArrowRight" });
+      expect(defaultProps.onChange).toHaveBeenLastCalledWith(45);
+    });
+
+    test("keeps the vertical arrows meaning more and less under RTL", () => {
+      render(<Slider {...defaultProps} dir="rtl" value={50} />);
+      const thumb = screen.getByRole("slider");
+      fireEvent.keyDown(thumb, { key: "ArrowUp" });
+      expect(defaultProps.onChange).toHaveBeenLastCalledWith(55);
+      fireEvent.keyDown(thumb, { key: "ArrowDown" });
+      expect(defaultProps.onChange).toHaveBeenLastCalledWith(45);
+    });
+
+    test("keeps the page keys meaning more and less under RTL", () => {
+      render(<Slider {...defaultProps} dir="rtl" value={50} />);
+      const thumb = screen.getByRole("slider");
+      fireEvent.keyDown(thumb, { key: "PageUp" });
+      expect(defaultProps.onChange).toHaveBeenLastCalledWith(100);
+      fireEvent.keyDown(thumb, { key: "PageDown" });
+      expect(defaultProps.onChange).toHaveBeenLastCalledWith(0);
+    });
+
+    test("keeps Home and End addressing the grid ends under RTL", () => {
+      render(<Slider {...defaultProps} dir="rtl" value={50} />);
+      const thumb = screen.getByRole("slider");
+      fireEvent.keyDown(thumb, { key: "End" });
+      expect(defaultProps.onChange).toHaveBeenLastCalledWith(100);
+      fireEvent.keyDown(thumb, { key: "Home" });
+      expect(defaultProps.onChange).toHaveBeenLastCalledWith(0);
+    });
+
+    test("measures a press from the right edge under RTL", () => {
+      const { container } = render(<Slider {...defaultProps} dir="rtl" />);
+      const root = stubRootRect(container);
+      fireEvent.pointerDown(root, { pointerId: 1, clientX: 50 });
+      expect(defaultProps.onChange).toHaveBeenCalledWith(75);
+    });
+
+    test("measures a press from the left edge under LTR", () => {
+      const { container } = render(<Slider {...defaultProps} dir="ltr" />);
+      const root = stubRootRect(container);
+      fireEvent.pointerDown(root, { pointerId: 1, clientX: 50 });
+      expect(defaultProps.onChange).toHaveBeenCalledWith(25);
+    });
+
+    test("offsets a press by the track's own position on screen", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+      const root = stubRootRect(container, 200, 400);
+      fireEvent.pointerDown(root, { pointerId: 1, clientX: 500 });
+      expect(defaultProps.onChange).toHaveBeenCalledWith(50);
+    });
+
+    test("resolves an automatic direction from the document it is rendered in", () => {
+      // `dir="auto"` leaves the attribute off the root and reads the computed direction
+      // instead, which this document reports as left-to-right
+      const { container } = render(<Slider {...defaultProps} dir="auto" value={50} />);
+      expect(getSliderRoot(container).hasAttribute("dir")).toBe(false);
+      fireEvent.keyDown(screen.getByRole("slider"), { key: "ArrowRight" });
+      expect(defaultProps.onChange).toHaveBeenLastCalledWith(55);
+    });
   });
 });

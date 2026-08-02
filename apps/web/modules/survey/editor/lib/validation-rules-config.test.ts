@@ -1,28 +1,43 @@
 import { describe, expect, test } from "vitest";
-import { TValidationRuleType } from "@formbricks/types/surveys/validation-rules";
+import { TValidationRuleType, ZValidationRuleType } from "@formbricks/types/surveys/validation-rules";
 import { RULE_TYPE_CONFIG } from "./validation-rules-config";
+
+/**
+ * The rule types the shared enum declares, taken from the enum itself rather than transcribed.
+ *
+ * The list used to be hand-written and had fallen ten short, so the test named "config for all validation
+ * rule types" passed while `stepMultipleOf` — the rule the Slider's grid check runs on — went entirely
+ * unexercised. Deriving it keeps the claim true as the enum grows.
+ */
+const allRuleTypes: TValidationRuleType[] = [...ZValidationRuleType.options];
 
 describe("RULE_TYPE_CONFIG", () => {
   test("should have config for all validation rule types", () => {
-    const allRuleTypes: TValidationRuleType[] = [
-      "minLength",
-      "maxLength",
-      "pattern",
-      "email",
-      "url",
-      "phone",
-      "minValue",
-      "maxValue",
-      "minSelections",
-      "maxSelections",
-    ];
+    expect(allRuleTypes).toHaveLength(27);
 
     allRuleTypes.forEach((ruleType) => {
-      expect(RULE_TYPE_CONFIG[ruleType]).toBeDefined();
+      expect(RULE_TYPE_CONFIG[ruleType], `config for ${ruleType}`).toBeDefined();
       expect(RULE_TYPE_CONFIG[ruleType].labelKey).toBeDefined();
       expect(typeof RULE_TYPE_CONFIG[ruleType].labelKey).toBe("string");
       expect(typeof RULE_TYPE_CONFIG[ruleType].needsValue).toBe("boolean");
     });
+  });
+
+  test("should not configure any rule type the enum does not declare", () => {
+    // The other direction of the same contract: a stale entry left behind after a rule was renamed would
+    // otherwise sit in the map unnoticed and appear in the editor's rule picker.
+    expect(Object.keys(RULE_TYPE_CONFIG).sort()).toEqual([...allRuleTypes].sort());
+  });
+
+  test("should give every rule that needs a value a value type", () => {
+    for (const ruleType of allRuleTypes) {
+      const config = RULE_TYPE_CONFIG[ruleType];
+      if (config.needsValue) {
+        expect(config.valueType, `valueType for ${ruleType}`).toBeDefined();
+      } else {
+        expect(config.valueType, `valueType for ${ruleType}`).toBeUndefined();
+      }
+    }
   });
 
   describe("minLength rule", () => {
@@ -113,6 +128,23 @@ describe("RULE_TYPE_CONFIG", () => {
     });
   });
 
+  describe("stepMultipleOf rule", () => {
+    test("should have correct config", () => {
+      const config = RULE_TYPE_CONFIG.stepMultipleOf;
+      expect(config.labelKey).toBe("step_multiple_of");
+      expect(config.needsValue).toBe(true);
+      expect(config.valueType).toBe("number");
+      expect(config.valuePlaceholder).toBe("5");
+      expect(config.unitOptions).toBeUndefined();
+    });
+
+    test("should carry no unit, because the step is expressed in the element's own scale", () => {
+      // Unlike minLength ("characters") or minSelections ("options"), a step has no unit of its own — it is
+      // read in whatever the slider's range is measured in — so offering a unit picker would be misleading.
+      expect(RULE_TYPE_CONFIG.stepMultipleOf.unitOptions).toBeUndefined();
+    });
+  });
+
   describe("minSelections rule", () => {
     test("should have correct config", () => {
       const config = RULE_TYPE_CONFIG.minSelections;
@@ -141,6 +173,7 @@ describe("RULE_TYPE_CONFIG", () => {
       expect(RULE_TYPE_CONFIG.maxLength.valueType).toBe("number");
       expect(RULE_TYPE_CONFIG.minValue.valueType).toBe("number");
       expect(RULE_TYPE_CONFIG.maxValue.valueType).toBe("number");
+      expect(RULE_TYPE_CONFIG.stepMultipleOf.valueType).toBe("number");
       expect(RULE_TYPE_CONFIG.minSelections.valueType).toBe("number");
       expect(RULE_TYPE_CONFIG.maxSelections.valueType).toBe("number");
     });
@@ -171,6 +204,13 @@ describe("RULE_TYPE_CONFIG", () => {
       expect(RULE_TYPE_CONFIG.phone.unitOptions).toBeUndefined();
       expect(RULE_TYPE_CONFIG.minValue.unitOptions).toBeUndefined();
       expect(RULE_TYPE_CONFIG.maxValue.unitOptions).toBeUndefined();
+      expect(RULE_TYPE_CONFIG.stepMultipleOf.unitOptions).toBeUndefined();
+    });
+
+    test("should offer unitOptions only for the length and selection rules", () => {
+      const withUnits = allRuleTypes.filter((ruleType) => RULE_TYPE_CONFIG[ruleType].unitOptions);
+
+      expect(withUnits.sort()).toEqual(["maxLength", "maxSelections", "minLength", "minSelections"]);
     });
   });
 });

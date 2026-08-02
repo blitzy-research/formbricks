@@ -47,8 +47,13 @@ const DECIMAL_NOTATION_PATTERN = /^-?\d+(?:\.(?<fraction>\d+))?(?:e(?<exponent>[
  * a survey author typed and a respondent sees, `0.2` rather than the binary fraction
  * 0.200000000000000011102230246251565... A negative result means a positive exponent outran the fraction,
  * i.e. the value is an integer such as 1.5e+21 and needs no decimal places at all.
+ *
+ * Exported because presentation code needs the same answer the grid test uses: a Slider summary derives how
+ * many decimals to display from the scale of the configured step, so that a step of 0.0001 is reported at
+ * the precision the author chose rather than rounded away. Deriving that from this one definition is what
+ * keeps the displayed precision and the validated grid describing the same number.
  */
-const getDecimalScale = (value: number): number | null => {
+export const getDecimalScale = (value: number): number | null => {
   if (!Number.isFinite(value)) {
     return null;
   }

@@ -1,5 +1,6 @@
 import { TFunction } from "i18next";
 import { describe, expect, test, vi } from "vitest";
+import { TSurveyElementTypeEnum } from "@formbricks/types/surveys/elements";
 import { ZSurveyLogicConditionsOperator } from "@formbricks/types/surveys/logic";
 import { TSurveyQuestionTypeEnum } from "@formbricks/types/surveys/types";
 import { TLogicRuleOption, getLogicRules } from "./logic-rule-engine";
@@ -465,6 +466,57 @@ describe("getLogicRules", () => {
           value: ZSurveyLogicConditionsOperator.Enum.isSkipped,
         },
       ]);
+    });
+
+    // Indexed through TSurveyElementTypeEnum rather than the deprecated TSurveyQuestionTypeEnum used above,
+    // because that legacy question enum stops at the seventeen question types and has no Slider member,
+    // while the element enum is the one the registry and its consumer are both keyed by. The registration
+    // itself is runtime-mandatory: the editor dereferences getLogicRules(t).element[element.type].options
+    // without a fallback, so a missing entry throws the moment an author references a slider in logic.
+    test("Slider", () => {
+      const rules = logicRules.element[TSurveyElementTypeEnum.Slider];
+      expect(rules).toBeDefined();
+      expect(rules.options).toEqual([
+        {
+          label: "mockTranslate(environments.surveys.edit.is_submitted)",
+          value: ZSurveyLogicConditionsOperator.Enum.isSubmitted,
+        },
+        {
+          label: "mockTranslate(environments.surveys.edit.is_skipped)",
+          value: ZSurveyLogicConditionsOperator.Enum.isSkipped,
+        },
+      ]);
+    });
+
+    test("Slider offers no value-comparison operators", () => {
+      // A Slider answer is a number, so numeric operators look plausible here. They are deliberately
+      // absent: the Slider follows Payment in exposing only submission state, and this assertion records
+      // that as intent rather than leaving it to look like an omission.
+      const values = logicRules.element[TSurveyElementTypeEnum.Slider].options.map((option) => option.value);
+
+      expect(values).toEqual([
+        ZSurveyLogicConditionsOperator.Enum.isSubmitted,
+        ZSurveyLogicConditionsOperator.Enum.isSkipped,
+      ]);
+      expect(values).not.toContain(ZSurveyLogicConditionsOperator.Enum.isGreaterThan);
+      expect(values).not.toContain(ZSurveyLogicConditionsOperator.Enum.isLessThan);
+      expect(values).not.toContain(ZSurveyLogicConditionsOperator.Enum.equals);
+    });
+
+    test("every element type the consumer can dereference has a rule set", () => {
+      // `getConditionOperatorOptions` reads `getLogicRules(t).element[element.type].options` with no
+      // fallback, so a missing entry is a runtime throw in the editor rather than a compile error. OpenText
+      // is the one type routed through composite keys instead of its own, so it is checked separately.
+      for (const elementType of Object.values(TSurveyElementTypeEnum)) {
+        if (elementType === TSurveyElementTypeEnum.OpenText) continue;
+
+        const rules = logicRules.element[elementType];
+        expect(rules, `logic rules for ${elementType}`).toBeDefined();
+        expect(rules.options.length, `operator options for ${elementType}`).toBeGreaterThan(0);
+      }
+
+      expect(logicRules.element[`${TSurveyElementTypeEnum.OpenText}.text`]).toBeDefined();
+      expect(logicRules.element[`${TSurveyElementTypeEnum.OpenText}.number`]).toBeDefined();
     });
   });
 
