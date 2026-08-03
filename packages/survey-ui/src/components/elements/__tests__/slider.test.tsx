@@ -49,6 +49,25 @@ const selectValue = (value: number): void => {
   fireEvent.change(getControl(), { target: { value: String(value) } });
 };
 
+/**
+ * Presses and releases a key on the platform control.
+ *
+ * Both halves are dispatched because the value a key resolves to is the default action of the press, so the
+ * release is the first point at which the control's own value can be read back.
+ */
+const pressKey = (key: string): void => {
+  const control = getControl();
+  fireEvent.keyDown(control, { key });
+  fireEvent.keyUp(control, { key });
+};
+
+/** Presses and releases a pointer on the platform control, the way a press on the track arrives. */
+const pressPointer = (button = 0): void => {
+  const control = getControl();
+  fireEvent.pointerDown(control, { button });
+  fireEvent.pointerUp(control, { button });
+};
+
 // ===========================================================================
 // Slider component tests
 // ===========================================================================
@@ -323,6 +342,171 @@ describe("Slider", () => {
       const { container } = render(<Slider {...defaultProps} value={Number.NaN} />);
 
       expect(getSlot(container, "slider-thumb")).toHaveClass("bg-input-bg");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Selecting the value the thumb is parked at
+  // -------------------------------------------------------------------------
+
+  /**
+   * An unanswered control's own value already sits at `min`, so an interaction asking for the minimum changes
+   * nothing and HTML - which fires `input` only on an actual change - reports nothing. These specs pin the
+   * recovery: once such an interaction finishes, the control reports the value it is holding. That is what
+   * makes the minimum selectable at all, and what makes a required slider completable.
+   */
+  describe("selecting the parked value", () => {
+    test.each(["Home", "ArrowLeft", "ArrowDown", "PageDown"])(
+      "reports the minimum when a pristine control is asked for it with %s",
+      (key) => {
+        render(<Slider {...defaultProps} />);
+
+        pressKey(key);
+
+        expect(defaultProps.onChange).toHaveBeenCalledWith(0);
+      }
+    );
+
+    test("reports a minimum that is not zero, which is not a special case", () => {
+      render(<Slider {...defaultProps} min={10} max={50} step={5} />);
+
+      pressKey("Home");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(10);
+    });
+
+    test("reports a negative minimum", () => {
+      render(<Slider {...defaultProps} min={-50} max={-10} step={5} />);
+
+      pressKey("ArrowLeft");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(-50);
+    });
+
+    test("reports the minimum when a press lands on the control", () => {
+      render(<Slider {...defaultProps} />);
+
+      pressPointer();
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(0);
+    });
+
+    test("reports the minimum while the required error is showing", () => {
+      // The respondent's way out of a rejected required slider is to select the minimum already in front of
+      // them, so this is the interaction that has to work for the error to be resolvable at all.
+      render(<Slider {...defaultProps} required errorMessage="Please fill out this field" />);
+
+      pressKey("Home");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(0);
+    });
+
+    test("reports the minimum once, not once per event", () => {
+      render(<Slider {...defaultProps} />);
+
+      pressKey("Home");
+
+      expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
+    });
+
+    test("reports a number, not a string", () => {
+      render(<Slider {...defaultProps} />);
+
+      pressKey("Home");
+
+      expect(typeof defaultProps.onChange.mock.calls[0][0]).toBe("number");
+    });
+
+    test.each(["Enter", " ", "Tab", "Escape"])(
+      "reports nothing for %s, which the control does not act on",
+      (key) => {
+        // `Enter` submits the surrounding form. Treating it as a selection would answer an untouched required
+        // slider with its minimum and defeat the required check the response contract depends on.
+        render(<Slider {...defaultProps} />);
+
+        pressKey(key);
+
+        expect(defaultProps.onChange).not.toHaveBeenCalled();
+      }
+    );
+
+    test("reports nothing for a release whose press began elsewhere", () => {
+      render(<Slider {...defaultProps} />);
+
+      fireEvent.pointerUp(getControl(), { button: 0 });
+
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+
+    test("reports nothing for a press with a button the control ignores", () => {
+      render(<Slider {...defaultProps} />);
+
+      pressPointer(2);
+
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+
+    test("reports nothing after a press is cancelled", () => {
+      render(<Slider {...defaultProps} />);
+      const control = getControl();
+
+      fireEvent.pointerDown(control, { button: 0 });
+      fireEvent.pointerCancel(control);
+      fireEvent.pointerUp(control, { button: 0 });
+
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+
+    test("reports nothing when the control already holds the minimum", () => {
+      // Nothing to recover, and a second report would recharge time to completion for an answer already given.
+      render(<Slider {...defaultProps} value={0} />);
+
+      pressKey("Home");
+      pressPointer();
+
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+
+    test("reports nothing when the control already holds some other value", () => {
+      render(<Slider {...defaultProps} value={50} />);
+
+      pressKey("ArrowLeft");
+      pressPointer();
+
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+
+    test("reports nothing while disabled", () => {
+      render(<Slider {...defaultProps} disabled />);
+
+      pressKey("Home");
+      pressPointer();
+
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+
+    test("does not report twice when the platform moved the value itself", () => {
+      // An interaction that did change the value is reported by the platform, and the recovery must not
+      // duplicate it: the answer arrives once, the control becomes answered, and the release adds nothing.
+      const { rerender } = render(<Slider {...defaultProps} />);
+
+      selectValue(25);
+      rerender(<Slider {...defaultProps} value={25} />);
+      pressKey("ArrowRight");
+
+      expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
+      expect(defaultProps.onChange).toHaveBeenCalledWith(25);
+    });
+
+    test("leaves the maximum to the platform, which was never parked on it", () => {
+      const { rerender } = render(<Slider {...defaultProps} />);
+
+      selectValue(100);
+      rerender(<Slider {...defaultProps} value={100} />);
+      pressKey("End");
+
+      expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
+      expect(defaultProps.onChange).toHaveBeenCalledWith(100);
     });
   });
 

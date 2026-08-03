@@ -17,6 +17,25 @@ const THUMB_SIZE_PX = 20;
 /** Fallback required marker, kept identical to the default `ElementHeader` applies. */
 const DEFAULT_REQUIRED_LABEL = "Required";
 
+/**
+ * The keys a range input answers by moving its own value, and therefore the only keys whose release can
+ * express a selection.
+ *
+ * `Enter` and `Space` are deliberately absent. `Enter` submits the surrounding form, so treating it as a
+ * selection would silently answer an untouched required slider with its minimum and defeat the required
+ * check the response contract depends on.
+ */
+const VALUE_ADJUSTING_KEYS = new Set([
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "PageUp",
+  "PageDown",
+  "Home",
+  "End",
+]);
+
 interface SliderProps {
   /** Unique identifier for the element container */
   elementId: string;
@@ -83,7 +102,10 @@ interface SliderProps {
  * `data-slot` attribute a consumer would target.
  *
  * An unanswered control parks the thumb at `min` while the response value stays `undefined`, and the thumb
- * fill is what keeps that state distinguishable from a slider genuinely answered with `min`.
+ * fill is what keeps that state distinguishable from a slider genuinely answered with `min`. Parking the
+ * thumb there is also why the control cannot rely on the `input` event alone: an interaction asking for the
+ * value the thumb is already parked at changes nothing, so HTML reports nothing, and the selection would be
+ * lost. `commitHeldValue` below is what closes that gap.
  */
 function Slider({
   elementId,
@@ -115,9 +137,11 @@ function Slider({
     [required ? requiredId : null, hasError ? errorId : null].filter(Boolean).join(" ") || undefined;
   const hasValue = typeof value === "number" && Number.isFinite(value);
 
-  // The visual layer is positioned from the prop rather than read back from the input, so what is drawn is
-  // always the answer actually held - including an out-of-range or off-grid value arriving from an earlier
-  // submission, which the input's own sanitisation would otherwise hide.
+  // The visual layer is positioned from the prop rather than read back from the input, so an off-grid value
+  // arriving from an earlier submission is drawn where it belongs instead of being moved to the nearest grid
+  // point by the input's own sanitisation. A value outside the range is the one thing the presentation cannot
+  // show faithfully - there is no track position for it - so it is clamped to the nearer bound, and the
+  // response value itself is left untouched for the shared evaluator to reject.
   const span = max - min;
   const clamped = hasValue ? Math.min(Math.max(value, min), max) : min;
   const percent = Number.isFinite(span) && span > 0 ? Math.min(Math.max((clamped - min) / span, 0), 1) : 0;
@@ -132,16 +156,80 @@ function Slider({
   // reaches the same default without asserting a grid the configuration does not define.
   const safeStep = Number.isFinite(step) && step > 0 ? step : undefined;
 
+  // A release only expresses a selection if the press that preceded it began on this control: without that
+  // record, a pointer press started elsewhere and merely finished over the control would answer the question.
+  // A ref rather than state, because nothing about it is rendered.
+  const pressBeganOnControl = React.useRef(false);
+
+  /**
+   * Reads the value the input itself resolved.
+   *
+   * `valueAsNumber` is already snapped to the grid anchored at `min`, so the number returned here is one the
+   * control's own survey accepts. The string fallback covers test renderers that do not implement the
+   * property.
+   */
+  const readHeldValue = (control: HTMLInputElement): number => {
+    const parsed = control.valueAsNumber;
+    return Number.isNaN(parsed) ? Number(control.value) : parsed;
+  };
+
   const handleChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
     if (disabled) return;
 
-    // `valueAsNumber` is the parsed value the input itself resolved, already snapped to the grid anchored at
-    // `min`. The string fallback covers test renderers that do not implement the property.
-    const parsed = event.currentTarget.valueAsNumber;
-    const next = Number.isNaN(parsed) ? Number(event.currentTarget.value) : parsed;
+    const next = readHeldValue(event.currentTarget);
     if (!Number.isFinite(next)) return;
 
     onChange(next);
+  };
+
+  /**
+   * Records the value the control is holding once an interaction finishes, for the one selection the `input`
+   * event cannot report.
+   *
+   * HTML fires `input` only on an actual change, and an unanswered control's value is already parked at
+   * `min`. Every interaction that asks for the minimum - `Home`, `ArrowLeft`, `ArrowDown` and `PageDown`, or
+   * a press at the low end of the track - therefore resolves to the value already there and reports nothing,
+   * leaving the answer unrecorded: a required slider could not be completed at all, and an optional one would
+   * silently drop the low end of its own range. The maximum never had this problem, which is the whole shape
+   * of the defect: only the parked value was unreachable.
+   *
+   * Reading back what the platform resolved, rather than assuming `min`, is what makes this safe on three
+   * counts. It is idempotent - when the interaction did move the value, `input` has already reported that same
+   * number, so committing it again changes nothing. It needs no notion of direction - `ArrowLeft` moves toward
+   * the maximum in a right-to-left survey, so any rule mapping a key to a bound would be wrong there. And it
+   * stays on the grid, because the value read back is the one the input snapped to.
+   */
+  const commitHeldValue = (control: HTMLInputElement): void => {
+    if (disabled || hasValue) return;
+
+    const held = readHeldValue(control);
+    if (!Number.isFinite(held)) return;
+
+    onChange(held);
+  };
+
+  const handleKeyUp = (event: React.KeyboardEvent<HTMLInputElement>): void => {
+    // The release rather than the press: the platform resolves the new value as the default action of
+    // `keydown`, so this is the first point at which the control's own value can be read back.
+    if (!VALUE_ADJUSTING_KEYS.has(event.key)) return;
+
+    commitHeldValue(event.currentTarget);
+  };
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLInputElement>): void => {
+    // Primary button only, matching the range input's own activation behaviour.
+    pressBeganOnControl.current = event.button === 0;
+  };
+
+  const handlePointerUp = (event: React.PointerEvent<HTMLInputElement>): void => {
+    if (!pressBeganOnControl.current) return;
+    pressBeganOnControl.current = false;
+
+    commitHeldValue(event.currentTarget);
+  };
+
+  const handlePointerCancel = (): void => {
+    pressBeganOnControl.current = false;
   };
 
   return (
@@ -209,6 +297,10 @@ function Slider({
             aria-invalid={hasError || undefined}
             aria-describedby={describedBy}
             onChange={handleChange}
+            onKeyUp={handleKeyUp}
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerCancel}
           />
 
           {/* Presentation only: the input above owns the role, the value and the focus, so these carry no
