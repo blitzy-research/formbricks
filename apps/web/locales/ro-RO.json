@@ -1649,7 +1649,7 @@
         "starts_with": "Începe cu",
         "state": "Stare",
         "step": "Pas",
-        "step_description": "Incrementul dintre valorile selectabile",
+        "step_description": "Incrementul dintre valorile care pot fi selectate",
         "straight": "Drept",
         "style_the_question_texts_descriptions_and_input_fields": "Stilizare textele întrebărilor, descrierile și câmpurile de introducere",
         "style_the_survey_card": "Stilizare card sondaj",
@@ -1725,7 +1725,7 @@
           "select_file_extensions": "Selectați extensiile de fișier...",
           "select_option": "Selectează opțiunea",
           "start_date": "Data de început",
-          "step_multiple_of": "Multiplu al pasului",
+          "step_multiple_of": "este multiplu de",
           "url": "Este un URL valid"
         },
         "validation_logic_and": "Toate sunt adevărate",
