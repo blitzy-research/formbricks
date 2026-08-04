@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
  */
 const FALLBACK_STEP = 1;
 
-/** Decimal places `toFixed` accepts and can express. */
+/** Widest decimal scale this component normalizes a reconstructed value at. */
 const MAX_DECIMAL_PLACES = 20;
 
 /**
@@ -122,10 +122,10 @@ interface SliderProps {
  * arrow keys step by one increment, Page keys jump, Home and End move to the bounds - and the handle is
  * named from the headline. The value readout is an `output` bound to the control.
  *
- * Appearance. Every part is token-driven - no colour, radius or font is hard-coded and no new CSS variable
- * is introduced - and each carries a stable slot attribute a consumer can target: `slider`, `slider-track`,
- * `slider-range` and `slider-thumb`. `dir` accepts `"ltr"`, `"rtl"` or `"auto"`, and the track, the fill and
- * the endpoint labels invert together.
+ * Appearance. Every part is token-driven - colour, radius and font come from the existing design tokens
+ * rather than from hard-coded values - and each carries a stable slot attribute a consumer can target:
+ * `slider`, `slider-track`, `slider-range` and `slider-thumb`. `dir` accepts `"ltr"`, `"rtl"` or `"auto"`,
+ * and the track, the fill and the endpoint labels invert together.
  */
 function Slider({
   elementId,
@@ -175,8 +175,8 @@ function Slider({
 
     // A grid point needs no more decimals than the wider of the origin and the step, so restating the sum at
     // that scale removes what the addition leaves behind without moving the value: `0.05 + 0.1` arrives as
-    // `0.15000000000000002` and leaves here as `0.15`. A scale finer than a fixed-point form can express is
-    // returned unchanged rather than truncated.
+    // `0.15000000000000002` and leaves here as `0.15`. A scale beyond the normalization cap is returned
+    // unchanged, so its precision is neither expanded nor truncated.
     const scale = Math.max(decimalPlaces(min), decimalPlaces(safeStep));
     if (scale > MAX_DECIMAL_PLACES) return reconstructed;
 
@@ -264,7 +264,6 @@ function Slider({
 
   return (
     <div className="w-full space-y-4" id={elementId} dir={dir}>
-      {/* Headline, description, required marker and optional media */}
       <ElementHeader
         headline={headline}
         description={description}

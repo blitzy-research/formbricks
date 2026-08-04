@@ -133,13 +133,6 @@ export const StylingPlayground: Story = {
   decorators: [createCSSVariablesDecorator<StoryProps>()],
 };
 
-/**
- * Resting state of a freshly rendered element.
- *
- * `value` is deliberately omitted so the control renders as unanswered: the
- * thumb parks at `min` but is filled with the input background rather than the
- * brand colour, and no readout is shown until the respondent interacts.
- */
 export const Default: Story = {
   args: {
     elementId: "slider-default",
@@ -188,10 +181,6 @@ export const WithError: Story = {
   },
 };
 
-/**
- * Non-interactive state. A value is supplied so the dimmed control still shows
- * a filled range, a brand-filled thumb and the selected-value readout.
- */
 export const Disabled: Story = {
   args: {
     elementId: "slider-disabled",
@@ -205,10 +194,6 @@ export const Disabled: Story = {
   },
 };
 
-/**
- * Right-to-left rendering. The track, the filled range and the endpoint label
- * row all invert together, so the lower label sits on the right.
- */
 export const RTL: Story = {
   args: {
     elementId: "slider-rtl",

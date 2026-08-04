@@ -14,7 +14,6 @@ import { Button } from "@/modules/ui/components/button";
 import { Input } from "@/modules/ui/components/input";
 import { Label } from "@/modules/ui/components/label";
 
-/** The three numeric fields the panel writes. */
 type TSliderNumericField = "min" | "max" | "step";
 
 /**
@@ -147,7 +146,6 @@ export const SliderElementForm = ({
     });
   };
 
-  /** The text a numeric field renders: what is being typed, or the number the element holds. */
   const numericFieldValue = (field: TSliderNumericField, storedValue: number): string | number =>
     numericDrafts[field] ?? storedValue;
 
@@ -311,7 +309,6 @@ export const SliderElementForm = ({
         </div>
       </div>
 
-      {/* Show selected value toggle — enabled by default, so only an explicit false turns it off */}
       <AdvancedOptionToggle
         // `showValue` is optional and defaults to true, so only an explicit `false` turns the readout off.
         // Reading it as truthy would leave a slider whose author never touched the toggle with it hidden.

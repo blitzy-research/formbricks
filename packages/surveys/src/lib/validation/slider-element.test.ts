@@ -101,11 +101,10 @@ describe("slider element acceptance criteria", () => {
   /**
    * Acceptance criterion (b).
    *
-   * What is provable here is that the value is accepted and that its numeric type satisfies the response-data
-   * contract every response route parses its payload with - this package has no database, so the write itself
-   * is out of its reach. Nothing about storage needs to be added for it: `ZResponseDataValue` already admits
-   * `z.number()`, and the persisted column is JSON typed by exactly the contract asserted below, so a value
-   * that survives it is stored as the number it is.
+   * What is asserted here is that the value is accepted by the evaluator and that `ZResponseData` preserves
+   * its numeric type - that contract is what every response route parses its payload with, and it already
+   * admits `z.number()`, so nothing had to be widened for a slider answer. The write itself belongs to the
+   * database layer and is outside this package and this test.
    */
   test("(b) a valid in-range, on-grid value of 50 validates and keeps its numeric type", () => {
     const element = buildSliderElement();
@@ -120,8 +119,8 @@ describe("slider element acceptance criteria", () => {
 
     expect(Object.keys(errorMap)).toHaveLength(0);
 
-    // The answer keeps its numeric type through the response-data contract that the persisted column is typed
-    // by. That is a necessary condition for "persists as a number", not the whole of it - see the docblock.
+    // The answer keeps its numeric type through the response-data contract every route parses its payload
+    // with; the write that follows belongs to the database layer - see the docblock.
     const responseData: TResponseData = { [SLIDER_ELEMENT_ID]: 50 };
 
     expect(typeof responseData[SLIDER_ELEMENT_ID]).toBe("number");
@@ -168,11 +167,10 @@ describe("slider element acceptance criteria", () => {
     expect(emptyValue.errors[0].ruleType).toBe("minLength");
     expect(emptyValue.errors[0].message).toBe("errors.please_fill_out_this_field");
 
-    // The element id is submitted as a KEY carrying an empty value, which is the shape a respondent's client
-    // sends for a slider that was rendered and left untouched, and the shape the feature's acceptance
-    // criterion is stated in. The engine does not depend on the key being there - the test immediately below
-    // proves an absent key is rejected identically, because `validateBlockResponses` iterates the ELEMENTS it
-    // is handed rather than the keys it receives.
+    // The element id submitted as a KEY carrying an empty value is the shape the acceptance criterion is
+    // stated in. The assertions that follow cover `undefined`, and the test below covers an absent key: the
+    // engine is element-driven, so it reads `responses[element.id]` for each element it is handed rather than
+    // iterating the keys it receives.
     const emptyStringMap = validateBlockResponses([element], { [SLIDER_ELEMENT_ID]: "" }, "en");
 
     expect(Object.keys(emptyStringMap)).toEqual([SLIDER_ELEMENT_ID]);
@@ -195,17 +193,9 @@ describe("slider element acceptance criteria", () => {
 
     // `validateBlockResponses` is element-driven: it walks the elements it is handed and reads
     // `responses[element.id]`, so a key that was never submitted arrives as `undefined` and meets exactly the
-    // same required check an empty string meets. The engine therefore refuses an unanswered required slider on
-    // whichever shape it is given, and it does so for every caller that hands it the element - the respondent
-    // runtime, which validates the whole block it rendered, as much as the server.
-    //
-    // Which elements a given caller hands over is that caller's question, not this engine's, and the answer is
-    // deliberately not uniform: the server-side wrapper validates the elements whose ids appear in the
-    // submitted data, which is the platform-wide contract every element type has been ingested under since
-    // "fix: always validate only responseData fields in client/management APIs" (#7292/#7296) and is asserted
-    // by that module's own suite. Pinning the engine's behaviour here keeps this property provable
-    // independently of that decision, so a future change to which elements are submitted for validation
-    // inherits a required check that already works.
+    // same required check an empty string meets. The server-side wrapper hands it the elements whose ids
+    // appear in the submitted response data; the respondent runtime hands it the whole block it rendered.
+    // Either way an unanswered required slider is refused, which is what the assertions below pin.
     const absentKey = validateBlockResponses([element], {}, "en");
 
     expect(Object.keys(absentKey)).toEqual([SLIDER_ELEMENT_ID]);
@@ -230,12 +220,9 @@ describe("slider element acceptance criteria", () => {
 });
 
 /**
- * The four criteria above are stated in terms of one small, well-behaved configuration. They are satisfied
- * by arithmetic that is only approximately correct and by an emptiness reading that is only approximately
- * the slider's, so on their own they cannot distinguish a sound implementation from one that happens to
- * agree on those inputs. The two suites below close that gap at the same entrypoints, extending criterion
- * (c) to a grid the criteria's configuration never reaches and criterion (d) to the difference between an
- * unanswered slider and one answered with the wrong shape.
+ * The two suites below extend the criteria's own entrypoints to the cases their small configuration never
+ * reaches: grid arithmetic at magnitudes where double precision stops being exact, and an optional slider
+ * answered with the wrong shape rather than left unanswered.
  */
 describe("slider grid rejection holds at magnitudes where floating point stops being exact", () => {
   const HIGH_MAGNITUDE_ELEMENT_ID = "sliderHigh";
@@ -344,7 +331,7 @@ describe("slider answers of the wrong shape are rejected whether or not the elem
     expect(result.errors[0].message).toBe("errors.invalid_format");
 
     // ...and through the shared block entrypoint every response route reaches, which is where a wrongly
-    // shaped answer would otherwise have been accepted and persisted.
+    // shaped answer would otherwise pass response validation.
     const errorMap = validateBlockResponses([element], { [OPTIONAL_ELEMENT_ID]: value }, "en");
 
     expect(Object.keys(errorMap)).toEqual([OPTIONAL_ELEMENT_ID]);
@@ -371,11 +358,13 @@ describe("slider answers of the wrong shape are rejected whether or not the elem
 
 /**
  * Criterion (a) proves one well-formed configuration round-trips, which an implementation with no
- * refinements at all would also satisfy. The contract's other half is what the schema must REFUSE, and it
- * refuses exactly three things: `min >= max` and `step <= 0`, which the specification states outright, and
- * a step wider than the range, which would leave only the minimum selectable. Nothing else is a
- * publish-time restriction. Each case below pins the exact `path` and message, because the path is what
- * steers the editor's error to the offending field and the message is what the author reads.
+ * refinements at all would also satisfy. The contract's other half is what the schema must REFUSE. Three
+ * refinements are specific to the slider and relational: `min >= max` and `step <= 0`, which the
+ * specification states outright, and a step wider than the range, which would leave only the minimum
+ * selectable. The base field types apply underneath them, so a non-numeric or NaN figure is refused by
+ * `z.number()` before any of the three is reached. Each case below pins the exact `path` and message,
+ * because the path is what steers the editor's error to the offending field and the message is what the
+ * author reads.
  */
 describe("slider schema rejects a configuration no answer could satisfy", () => {
   /**
@@ -481,9 +470,9 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
 
   test("should be refused by the server as well when such a configuration is already persisted", () => {
     // The schema is only reached by a survey saved through the editor's validated path; the draft autosave
-    // path persists an element without it. So a step wider than its span can reach a live survey, and the
-    // one value its degenerate grid contains - the minimum - is the answer that would otherwise be accepted
-    // and stored. Both entrypoints every response route reaches must refuse it.
+    // path saves an element without it. So a step wider than its span can reach a live survey, and the one
+    // value its degenerate grid contains - the minimum - is the answer that would otherwise pass response
+    // validation. Both entrypoints every response route reaches must refuse it.
     const malformed = {
       id: SLIDER_ELEMENT_ID,
       type: TSurveyElementTypeEnum.Slider,
@@ -518,17 +507,16 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
    * One contract, read by both entry points.
    *
    * The schema decides which configurations an author may publish. The response evaluator reads the SAME
-   * three facts - `min < max`, `step > 0`, a step no wider than the range - before injecting the range and
-   * grid rules, so a configuration the schema accepts is one the evaluator can check answers against, and a
-   * configuration the schema refuses is one the evaluator fails closed on. The second direction matters
-   * because such an element can still reach the runtime through the editor's draft autosave path, which does
-   * not parse the element schema.
+   * three relational facts - `min < max`, `step > 0`, a step no wider than the range - before injecting the
+   * range and grid rules, so a configuration the schema refuses is one the evaluator fails closed on. That
+   * direction matters because such an element can still reach the runtime through the editor's draft autosave
+   * path, which does not parse the element schema.
    *
-   * The evaluator's read is additionally DEFENSIVE, which is the one place the two deliberately diverge: it
-   * also declines a bound or step that is not a finite number, because the compiled type only promises these
-   * fields exist and the three rules are derived from these very figures. That is a fail-closed refusal at
-   * response time, not a restriction on what an author may save - and it is asserted below so the divergence
-   * is recorded rather than incidental.
+   * The evaluator's read is additionally DEFENSIVE, which is where the two deliberately diverge: it also
+   * declines a bound or step that is not a finite number, which `z.number()` admits, because the compiled
+   * type only promises these fields exist and the three rules are derived from these very figures. That is a
+   * fail-closed refusal at response time, not a restriction on what an author may save - and it is asserted
+   * below so the divergence is recorded rather than incidental.
    */
   describe("the schema and the response evaluator share one numeric domain", () => {
     const buildSliderWithConfig = (config: {
@@ -574,9 +562,9 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
     ])(
       "accepts $label at the schema, because `z.number()` admits it, and still fails closed at the evaluator",
       ({ range, step }) => {
-        // The publish-time contract is the three refinements and nothing more, so these parse. The
-        // evaluator's defensive read declines them, because a rule derived from an infinite bound places the
-        // grid nowhere - so the answer is refused with the accurate structural reason instead.
+        // An infinite bound satisfies `z.number()` and breaks none of the three relational refinements, so
+        // these parse. The evaluator's defensive read declines them, because a rule derived from an infinite
+        // bound places the grid nowhere - so the answer is refused with the accurate structural reason.
         expect(parseSliderConfig({ range, step }).success).toBe(true);
 
         const result = validateElementResponse(buildSliderWithConfig({ range, step }), 50, "en");
@@ -602,8 +590,8 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
         above: 2e15,
       },
       { label: "a grid offset from zero", range: { min: 10, max: 50 }, step: 5, value: 15, above: 55 },
-      // A grid an earlier, over-restrictive precision policy refused. It is lawful under the frozen
-      // contract, so it must be checked by the injected rules like every other lawful configuration.
+      // A grid far finer than the scale of its own range. It is valid under the schema, so its answers are
+      // judged by the injected rules like those of every other valid configuration.
       {
         label: "a grid finer than the range's own scale",
         range: { min: 0, max: 1 },
@@ -652,23 +640,17 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
 });
 
 /**
- * The grid rule is a security constraint: it is what rejects an off-grid value posted straight to a
- * response endpoint, bypassing the browser control entirely. That makes it worth being exact about which
- * layer answers which question, because the rule is deliberately not the one that answers all of them.
+ * The grid rule is a security constraint: it rejects an off-grid value posted straight to a response
+ * endpoint, bypassing the browser control entirely. Which layer answers which question therefore matters.
  *
- * A step that describes no grid is a CONFIGURATION mistake, and the frozen contract assigns it to the
- * layers that own configuration rather than to this rule: the element schema rejects it with an
- * author-facing message, and the evaluator refuses to inject these rules at all for a slider whose
- * configuration it cannot read, rejecting the submitted answer through its own configuration gate instead.
- * The rule therefore passes such an answer through - it has no grid to judge it against, and reporting a
- * configuration mistake as if it were the respondent's would be wrong on a value that may be entirely
- * valid. The suite below pins that division, and then pins the layers that DO reject the configuration, so
- * the constraint provably has not gone missing.
- *
- * The origin is a different question with a different answer. There, a grid does exist and an origin that
- * is not a finite number simply places it nowhere, so the value cannot be shown to sit on it and the rule
- * rejects. Both halves are asserted here because `params` is a plain, non-discriminated union - `{ min: 1 }`
- * satisfies it through the `minValue` member - so either shape genuinely can reach the validator's cast.
+ * A step that describes no grid is a CONFIGURATION mistake, so this rule passes such an answer through -
+ * having no grid to judge it against - and the configuration layers refuse it instead: the element schema
+ * rejects the step with an author-facing message, and the evaluator declines to inject these rules for a
+ * slider whose configuration it cannot read, rejecting the answer through its own configuration gate. An
+ * origin that is not a finite number is this rule's own question: a grid does exist, an unplaceable origin
+ * means the value cannot be shown to sit on it, and the rule fails closed. Both shapes are asserted because
+ * `params` is a plain, non-discriminated union - `{ min: 1 }` satisfies it through the `minValue` member - so
+ * either can reach the validator's cast.
  */
 describe("stepMultipleOf defers a step that describes no grid to the configuration layers", () => {
   test.each([
@@ -726,15 +708,13 @@ describe("stepMultipleOf defers a step that describes no grid to the configurati
     expect(result.errors[0].ruleId).toBe("sliderConfiguration");
     expect(result.errors[0].message).toBe("errors.invalid_format");
 
-    // ...and the same element cannot be saved in the first place, which is the layer that reports the mistake
-    // to the author in terms they can act on.
     expect(ZSurveySliderElement.safeParse(brokenElement).success).toBe(false);
   });
 
-  test("should leave the rule list schema exactly as permissive as it was", () => {
-    // `ZValidationRules` is an unrefined array, as it is for every other rule type: the pairing is not
-    // enforced there, which is why the validator has to answer for mismatched params at all - by deferring a
-    // missing grid to the configuration layers above, and by rejecting an unplaceable origin itself.
+  test("should keep the rule list schema permissive about rule and params pairing", () => {
+    // `ZValidationRules` is an unrefined array for every rule type: it does not enforce that a rule's params
+    // match its type, which is why the validator answers for mismatched params itself - deferring a missing
+    // grid to the configuration layers above and rejecting an unplaceable origin.
     expect(
       ZValidationRules.safeParse([{ id: "grid-rule", type: "stepMultipleOf", params: { min: 1 } }]).success
     ).toBe(true);

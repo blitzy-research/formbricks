@@ -172,11 +172,13 @@ interface TSliderConfiguration {
  *
  * A slider answer is contractually exactly one number, but the transport schema `ZResponseDataValue`
  * deliberately admits strings, arrays and records for the other element types, and every response route
- * reaches this evaluator through `validateBlockResponses`. The numeric rules are intentionally lenient -
- * they coerce with `Number.parseFloat` and skip values they cannot parse - so without this gate a payload
- * such as `"50"`, `"50junk"` or `["50"]` posted straight to the API would satisfy the range and grid rules
- * and then persist with the wrong shape. Rejecting it here keeps the server authoritative over the
- * response contract while leaving the numeric rules element-agnostic and reusable.
+ * reaches this evaluator through `validateBlockResponses`. The range rules are intentionally lenient - they
+ * coerce with `Number.parseFloat` and skip values they cannot parse - so a payload such as `"50"`,
+ * `"50junk"` or `["50"]` posted straight to the API passes both of them. This gate answers such a payload
+ * with a single error that names its shape as the reason, keeping the server authoritative over the response
+ * contract while leaving the numeric rules element-agnostic and reusable. It stands independently of the
+ * injected rules - the grid rule refuses a non-number as well - so the contract holds wherever the two
+ * overlap and the respondent still reads one accurate reason.
  *
  * Absence is `checkRequiredField`'s business, so the caller runs this gate only when that check stayed
  * silent: an unanswered optional slider stays valid and an unanswered required slider yields exactly one
@@ -191,10 +193,10 @@ const checkSliderValueType = (
     return null;
   }
 
-  // Only a genuinely absent key counts as "no answer" here. `isEmpty` additionally treats "", [] and {} as
-  // empty, which is correct for the text and choice contracts but wrong for this one: those shapes are
-  // *present* values of the wrong type. Classifying them as absent would let an optional slider skip this
-  // gate, the two range rules and the grid rule alike, and persist a non-numeric answer.
+  // `undefined`, or a defensive `null`, is what counts as "no answer" here. `isEmpty` additionally treats
+  // "", [] and {} as empty, which is correct for the text and choice contracts but wrong for this one: those
+  // shapes are *present* values of the wrong type. Classifying them as absent would let an optional slider
+  // skip this gate and pass validation carrying a non-numeric answer.
   if (value === undefined || value === null) {
     return null;
   }
@@ -216,9 +218,10 @@ const checkSliderValueType = (
 /**
  * Read a slider's numeric configuration, or `null` when it cannot be trusted.
  *
- * This is a DEFENSIVE READ, not a second contract. It enforces exactly what `ZSurveySliderElement` enforces
- * - `min < max`, `step > 0`, and a step no wider than the range - and nothing more, so a configuration the
- * editor accepts is exactly a configuration whose answers can be validated here.
+ * This is a DEFENSIVE READ, not a second contract. It mirrors the three relational checks
+ * `ZSurveySliderElement` makes - `min < max`, `step > 0`, and a step no wider than the range - and adds one
+ * runtime guard on top of them: a bound or step that is absent, non-numeric or non-finite is refused, which
+ * `z.number()` on its own does not do for the infinities.
  *
  * It has to read defensively because a survey saved from the editor's draft autosave path reaches persistence
  * without passing that schema, so at runtime a slider can arrive with `range` or `step` absent or non-numeric
@@ -262,9 +265,10 @@ const readSliderConfig = (element: TSurveyElement): TSliderConfiguration | null 
  * Reject a submitted slider value whose element configuration cannot be trusted.
  *
  * Without this the three intrinsic rules simply would not be injected for a malformed slider, leaving the
- * answer unconstrained: a value outside any intended range and off any intended grid would persist. Failing
- * closed keeps the server authoritative even for a survey whose element definition is incomplete, and does
- * so with a validation error rather than the TypeError an unguarded configuration read would raise.
+ * answer unconstrained: a value outside any intended range and off any intended grid would pass response
+ * validation. Failing closed keeps the server authoritative even for a survey whose element definition is
+ * incomplete, and does so with a validation error rather than the TypeError an unguarded configuration read
+ * would raise.
  */
 const checkSliderConfiguration = (
   element: TSurveyElement,
@@ -547,34 +551,25 @@ export const validateElementResponse = (
     errors.push(requiredError);
   }
 
-  // Check the slider response contract before any rule runs, so a wrong-typed answer is rejected even when
-  // the numeric rules would have coerced it, and a value submitted against an untrustworthy configuration is
-  // rejected rather than left unconstrained. Only reached when the required check stayed silent, so an
-  // unanswered required slider still reports exactly one "required" error. At most one of the two gates
-  // fires, and whichever does ends the evaluation.
+  // The slider's structural gates run before any rule, and whichever of the two fires ends the evaluation:
+  // one mistake earns one error, and the rules would only restate it - or, on a value with no numeric
+  // meaning at all, add the contradictory pair "at least {min}" and "no greater than {max}". Reached only
+  // when the required check stayed silent, so an unanswered required slider still reports exactly one
+  // "required" error.
   if (!requiredError) {
     const sliderError =
       checkSliderValueType(element, value, t) ?? checkSliderConfiguration(element, value, t);
     if (sliderError) {
       errors.push(sliderError);
-      // One mistake, one error. Returning here - rather than falling through to the rules - is what keeps
-      // that true: the injected grid rule also fails closed on a non-number, so continuing would restate
-      // the same complaint, and for NaN the two range rules would additionally report the contradictory
-      // pair "at least {min}" and "no greater than {max}". The gate already carries the accurate reason,
-      // and everything the rules would add is downstream of a value that has no numeric meaning at all.
-      // The validators' own fail-closed policy is deliberately left untouched, so they remain
-      // authoritative for any caller that reaches the rule engine without passing through this gate.
       return { valid: false, errors };
     }
   }
 
   // Validation rules apply to matrix elements regardless of required status
 
-  // Get validation rules. A slider's constraints are intrinsic rather than author-configured -
-  // `APPLICABLE_RULES.slider` is deliberately empty and the element schema declares no `validation` field -
-  // so any `validation` block found on one can only have arrived from a hand-crafted payload or a draft that
-  // bypassed the schema. Discarding it keeps the three injected rules from being replaced by a same-type
-  // rule or short-circuited by `logic: "or"`, and so keeps the range and grid constraints mandatory.
+  // Get validation rules. A slider's constraints are intrinsic rather than author-configured, so any
+  // `validation` block carried by one is discarded: that is what keeps the three injected rules from being
+  // replaced by a same-type rule or short-circuited by `logic: "or"`.
   const validation =
     element.type === TSurveyElementTypeEnum.Slider
       ? undefined

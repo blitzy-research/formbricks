@@ -428,12 +428,11 @@ describe("validators", () => {
     });
 
     test("should return valid true for an explicit null, which is equally unanswered", () => {
-      // A cleared answer arrives as `null` rather than `undefined` in a JSON payload, and the engine's own
-      // emptiness check treats the two identically, so the grid rule defers to required validation for both.
-      // Worth asserting in its own right because a rule reading `null` as a number would see 0 - which sits on
-      // every grid anchored at zero, and would be waved through as an answer rather than deferred as an
-      // absence. The cast is the point rather than a workaround: `TResponseDataValue` does not admit null, so
-      // only a runtime payload can produce this and only a runtime assertion can cover it.
+      // The engine's emptiness check treats `null` exactly as it treats `undefined`, so the grid rule defers
+      // to required validation for both. Worth asserting in its own right because a rule reading `null` as a
+      // number would see 0 - which sits on every grid anchored at zero, and would be waved through as an
+      // answer rather than deferred as an absence. `TResponseDataValue` does not admit null, so the cast is
+      // what makes this defensive coverage for a direct caller reachable at all.
       const explicitNull = null as unknown as TResponseDataValue;
 
       const result = validators.stepMultipleOf.check(explicitNull, { step: 5 }, {} as TSurveyElement);
@@ -520,7 +519,7 @@ describe("validators", () => {
     });
 
     test("should reject a half-step value whose scaled form exceeds the safe integer range", () => {
-      // The regression this pins: scaling 1000000000000000.5 by ten exceeds Number.MAX_SAFE_INTEGER, and
+      // The hazard this pins: scaling 1000000000000000.5 by ten exceeds Number.MAX_SAFE_INTEGER, and
       // reconstructing the nearest grid point in double arithmetic lands back on the submitted value itself
       // because the spacing between representable doubles at 1e15 is 0.125 - wider than the 0.2 step. A
       // reconstruct-and-measure check therefore reports zero distance and accepts both values below, each of
@@ -610,9 +609,9 @@ describe("validators", () => {
     });
 
     // The rule owns the whole of its own judgement: the element schema that injects it constrains only the
-    // bounds and the step's sign, so this rule must be able to judge any configuration that schema
-    // publishes rather than relying on it to pre-exclude the hard ones. These cases hold it to that, at the
-    // precision where the naive implementation would have silently started forgiving everything.
+    // relation between the bounds, the step's sign and the step's width against the range, so this rule must
+    // be able to judge any configuration that schema publishes rather than relying on it to pre-exclude the
+    // hard ones. These cases hold it to that at the precision where forgiving everything is the easy failure.
     describe("self-contained grid judgement", () => {
       const buildConfiguration = (min: number, max: number, step: number): Record<string, unknown> => ({
         id: "slider1",
@@ -654,11 +653,12 @@ describe("validators", () => {
       test("should judge an origin of any precision, since the origin anchors the grid", () => {
         const offset = 1e-310;
 
+        // `offset + 0.1` is exactly `0.1` in doubles, one whole `offset` short of the grid point it names,
+        // but that shortfall is far below the representation allowance at this magnitude, so it is forgiven
+        // rather than convicted.
         expect(
           validators.stepMultipleOf.check(offset + 0.1, { step: 0.1, offset }, {} as TSurveyElement).valid
         ).toBe(true);
-        // 0.1 itself is one whole `offset` short of the grid point at `offset + 0.1`, but that shortfall is
-        // far below the representation allowance at this magnitude, so it is forgiven rather than convicted.
         expect(validators.stepMultipleOf.check(0.15, { step: 0.1, offset }, {} as TSurveyElement).valid).toBe(
           false
         );

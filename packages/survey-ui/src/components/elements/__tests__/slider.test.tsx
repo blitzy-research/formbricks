@@ -16,9 +16,9 @@ import { Slider } from "../slider";
  * answered, error, disabled and right-to-left states.
  *
  * Interaction is exercised through the keyboard rather than the pointer, because happy-dom renders no layout
- * for a pointer position to be measured against. Real dragging and the painted right-to-left inversion are
- * verified in a browser instead; what these specs pin is that the primitive is handed the direction, bounds
- * and grid it needs to produce them.
+ * for a pointer position to be measured against. Pointer dragging and the painted right-to-left inversion
+ * are therefore beyond this suite's reach; what it does assert is that the primitive is handed the
+ * direction, bounds and grid those behaviours are produced from.
  */
 
 // ---------------------------------------------------------------------------

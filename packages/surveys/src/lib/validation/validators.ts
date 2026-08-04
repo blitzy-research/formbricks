@@ -95,11 +95,12 @@ interface TScaledDecimal {
 /**
  * Decompose a number into its exact decimal form, or null when it has none.
  *
- * The decomposition is taken from the shortest decimal string that round-trips back to the same double,
- * which is the decimal the survey author typed and the respondent sees - `0.2` rather than the binary
- * fraction 0.200000000000000011102230246251565... Comparing those decimals is what makes a 0.1 grid accept
- * 0.3, and it is exact: no digit of the printed form is discarded, so the returned pair describes the
- * operand and nothing else.
+ * The decomposition is taken from the shortest decimal string that round-trips back to the received double -
+ * `0.2` rather than the binary fraction 0.200000000000000011102230246251565... A typed `0.2` arrives in
+ * exactly that form, while a double produced by arithmetic keeps whatever it actually holds, so
+ * `0.30000000000000004` decomposes as itself rather than as `0.3`. Comparing these decimals is what makes a
+ * 0.1 grid accept 0.3, and it is exact: no digit of the printed form is discarded, so the returned pair
+ * describes the operand and nothing else.
  *
  * Every finite double has such a form and no bound is placed on how precise it may be, so this rule owns
  * the whole of its own judgement: there is no configuration it must be shielded from by the element schema
@@ -130,7 +131,8 @@ const toScaledDecimal = (value: number): TScaledDecimal | null => {
 };
 
 /**
- * Restate a decimal on a coarser scale. Exact by construction: scaling up only appends zeroes.
+ * Restate a decimal on a common scale, equal to or finer than its own. Exact by construction: raising the
+ * scale only appends zeroes.
  */
 const liftToScale = (decimal: TScaledDecimal, scale: number): bigint =>
   decimal.digits * 10n ** BigInt(scale - decimal.scale);

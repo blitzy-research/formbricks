@@ -1081,8 +1081,6 @@ export const getElementSummary = async (
           }
         });
 
-        // `|| 0` covers the no-answer case, where the division is NaN, exactly as the OpinionScale case
-        // above does.
         const average = convertFloatTo2Decimal(totalValue / totalResponseCount) || 0;
 
         summary.push({

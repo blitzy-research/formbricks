@@ -160,10 +160,9 @@ const transformAnswer = (
         break;
       }
 
-      // Rating, NPS and opinion scale keep the coercion they have published since before the slider existed.
-      // Their stored values predate this change, `computeScore` already parses a stored `"5"` for them, and
-      // narrowing them here would alter established webhook output for question types this feature does not
-      // touch.
+      // Rating, NPS and opinion scale stay tolerant of a numeric string, because a stored answer for those
+      // three legitimately is one and `computeScore` parses a stored `"5"` for them the same way. Narrowing
+      // them here would withhold answers their consumers already receive.
       baseAnswer.number = typeof responseValue === "number" ? responseValue : Number(responseValue);
       break;
     }

@@ -1080,17 +1080,17 @@ describe("transformToTypeformPayload", () => {
     });
 
     test("should omit a numeric string rather than coercing it for a slider", () => {
-      // Numeric-string tolerance exists only for the three element types that predate the slider, whose
-      // stored answers may legitimately be strings; the sibling suite below guards that. A slider's answer
-      // contract is exactly one number and the shared evaluator rejects every other shape at ingress, so a
-      // string here can only be corruption and is withheld.
+      // Numeric-string tolerance belongs to rating, nps and opinionScale alone, whose stored answers may
+      // legitimately be strings; the sibling suite below guards that. A slider's answer contract is exactly
+      // one number and the shared evaluator rejects every other shape at ingress, so a string here can only
+      // be corruption and is withheld.
       expect(transformSliderValue("50").answers).toHaveLength(0);
       expect(transformSliderValue("  50  ").answers).toHaveLength(0);
     });
 
     test("should keep publishing every finite selection untouched", () => {
-      // Regression guard for the omissions above: real selections must never be dropped. Whether a
-      // value is inside the configured range is decided by response validation at ingress, not here.
+      // The other side of the omissions above: a real selection is never dropped. Whether a value is inside
+      // the configured range is decided by response validation at ingress, not here.
       expect(transformSliderValue(50).answers[0].number).toBe(50);
       expect(transformSliderValue(0).answers[0].number).toBe(0);
       expect(transformSliderValue(2.5).answers[0].number).toBe(2.5);
@@ -1112,9 +1112,8 @@ describe("transformToTypeformPayload", () => {
    * is rejected outright by ZTypeformCompatiblePayload. The slider therefore omits the answer, which is
    * already how an unanswered question is reported.
    *
-   * What rating, nps and opinionScale publish is deliberately not touched, and deliberately not restated
-   * here: this feature adds a branch for one new element type rather than changing the behaviour of three
-   * existing ones.
+   * What rating, nps and opinionScale publish is their own contract, asserted by the sibling suite rather
+   * than restated here.
    *
    * These suites use dedicated single-element fixtures, so every count asserted against the comprehensive
    * mockSurvey above stays exact.
@@ -1162,8 +1161,8 @@ describe("transformToTypeformPayload", () => {
 
     // None of these is a number a respondent could have selected on a slider: "" and [] would have become a
     // fabricated 0, {} an unpublishable NaN, and Infinity a value outside any configured range. NaN itself is
-    // covered separately below. This list drives the slider's omission suite and, inverted, the legacy
-    // coercion suite that follows it.
+    // covered separately below. This list drives the slider's omission suite and, inverted, the coercion
+    // suite for the three numeric types that do tolerate a string.
     const unpublishableShapes: [string, unknown][] = [
       ["an empty string", ""],
       ["a whitespace-only string", "   "],
@@ -1178,17 +1177,15 @@ describe("transformToTypeformPayload", () => {
       ["a boolean", true],
     ];
 
-    // Strictness is asserted for the slider alone. Applying it to the three legacy types would be a
-    // behavioural change to question types this feature does not touch.
+    // Strictness is asserted for the slider alone: rating, nps and opinionScale answer to the tolerant
+    // contract their consumers already receive, which the sibling suite covers.
     describe("slider", () => {
       test.each(unpublishableShapes)("should omit the answer for %s", (_label, value) => {
         const result = transformNumeric(TSurveyElementTypeEnum.Slider, value);
 
         expect(result.answers).toHaveLength(0);
         expect(result.answers.find((a) => a.field.id === "q_numeric")).toBeUndefined();
-        // The field definition is still published, exactly as it is for an unanswered question.
         expect(result.definition.fields).toHaveLength(1);
-        // ...and the payload stays schema-valid, which a NaN answer would not have been.
         expect(() => ZTypeformCompatiblePayload.parse(result)).not.toThrow();
       });
 
@@ -1203,8 +1200,6 @@ describe("transformToTypeformPayload", () => {
       });
     });
 
-    // The other side of the same branch: a stored number publishes unchanged, and an absent or explicitly
-    // null value returns before the number branch is ever reached.
     describe("slider values that do publish", () => {
       const elementType = TSurveyElementTypeEnum.Slider;
 
@@ -1242,7 +1237,7 @@ describe("transformToTypeformPayload", () => {
 
     test("should keep the payload schema-valid when a slider answer is NaN", () => {
       // The slider is deliberately excluded from computeScore, so once the answer is omitted nothing else in
-      // the payload carries the NaN forward - which is what previously made the payload unpublishable.
+      // the payload carries the NaN forward - and a NaN anywhere in it would make it unpublishable.
       const result = transformNumeric(TSurveyElementTypeEnum.Slider, Number.NaN);
 
       expect(result.answers).toHaveLength(0);
@@ -1265,15 +1260,14 @@ describe("transformToTypeformPayload", () => {
     });
 
     test("should leave every non-numeric answer type untouched", () => {
-      // The change is scoped to the "number" branch, so a text answer still stringifies as before - including
-      // the empty string, which is a legitimate text value rather than an absent one.
+      // The slider's strictness lives in the "number" branch alone, so a text answer stringifies whatever it
+      // holds - including the empty string, which is a legitimate text value rather than an absent one.
       const textResult = transformNumeric(TSurveyElementTypeEnum.OpenText, "");
       const textAnswer = textResult.answers.find((a) => a.field.id === "q_numeric");
       expect(textAnswer).toBeDefined();
       expect(textAnswer?.type).toBe("text");
       expect(textAnswer?.text).toBe("");
 
-      // ...and a consent answer still resolves its boolean from the stored marker string.
       const consentResult = transformNumeric(TSurveyElementTypeEnum.Consent, "accepted");
       const consentAnswer = consentResult.answers.find((a) => a.field.id === "q_numeric");
       expect(consentAnswer).toBeDefined();

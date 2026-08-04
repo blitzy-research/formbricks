@@ -21,19 +21,18 @@ interface SliderElementProps {
 /**
  * Runtime wrapper for the slider element.
  *
- * A selection is stored as a bare number. `value` is forwarded exactly as it arrives, never defaulted
- * and never emitted on mount, so an untouched slider keeps no value at all - a slider answered with `0`
- * would otherwise be indistinguishable from one that was skipped, which both the required check and the
- * summary's dismissed count depend on.
+ * A selection is emitted as a bare number keyed by the element id. `value` is forwarded exactly as it
+ * arrives, never defaulted and never emitted on mount, so an untouched slider carries no value at all - a
+ * slider answered with `0` would otherwise be indistinguishable from one that was skipped, which both the
+ * required check and the summary's dismissed count depend on.
  *
- * The control reports a value once an interaction settles rather than once per movement, so each report is
- * one answer: the response record is written once and one segment of time to completion is billed.
- * `getUpdatedTtc` ADDS the duration it is handed, so every segment has to start where the previous one
- * ended - otherwise a second interaction billed from the element's mount time would re-charge time the first
- * one already paid for. `billElapsedTime` closes and reopens the segment in one clock reading, and advances
- * both records of where it begins: this component's own ref, which is read synchronously, and the
- * `startTime` state that `useTtc` bills from when the tab is hidden. Keeping those two in step is what stops
- * an answer and a subsequent tab switch from charging the same seconds twice.
+ * Every value the control reports bills one segment of time to completion. `getUpdatedTtc` ADDS the duration
+ * it is handed, so each segment has to start where the previous one ended - otherwise a later report billed
+ * from the element's mount time would re-charge time an earlier one already paid for. `billElapsedTime`
+ * closes and reopens the segment in one clock reading, and advances both records of where it begins: this
+ * component's own ref, which is read synchronously, and the `startTime` state that `useTtc` bills from when
+ * the tab is hidden. Keeping those two in step is what stops a report and a subsequent tab switch from
+ * charging the same seconds twice.
  */
 export function SliderElement({
   element,
@@ -84,7 +83,6 @@ export function SliderElement({
 
   const handleSubmit = (e: Event) => {
     e.preventDefault();
-    // Update TTC when form is submitted (for TTC collection)
     billElapsedTime();
   };
 
