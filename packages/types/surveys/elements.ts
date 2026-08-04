@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ZStorageUrl, ZUrl } from "../common";
 import { ZI18nString } from "../i18n";
 import { ZAllowedFileExtension } from "../storage";
-import { TSurveyElementTypeEnum, parseSurveySliderConfiguration } from "./constants";
+import { TSurveyElementTypeEnum } from "./constants";
 import { FORBIDDEN_IDS } from "./validation";
 import { ZValidationRules } from "./validation-rules";
 
@@ -14,18 +14,8 @@ import { ZValidationRules } from "./validation-rules";
  *
  * However, we re-export it here so that most consumers (who also need the Zod schemas)
  * can import everything from a single file (`elements.ts`).
- *
- * `parseSurveySliderConfiguration` lives there for the same reason and is re-exported for the same
- * convenience: it is the canonical definition of a usable slider configuration, shared by the schema below
- * and by the respondent runtime's response evaluator, and the runtime must be able to reach it without
- * pulling every Zod schema in this file into its bundle.
  */
-export { TSurveyElementTypeEnum, parseSurveySliderConfiguration };
-export type {
-  TSurveySliderConfiguration,
-  TSurveySliderConfigurationIssue,
-  TSurveySliderConfigurationResult,
-} from "./constants";
+export { TSurveyElementTypeEnum };
 
 // Element ID validation (same rules as questions - USER EDITABLE)
 export const ZSurveyElementId = z.string().superRefine((id, ctx) => {
@@ -395,18 +385,33 @@ export const ZSurveySliderElement = ZSurveyElementBase.extend({
   upperLabel: ZI18nString.optional(),
   showValue: z.boolean().optional().default(true),
 }).superRefine((data, ctx) => {
-  // The single source of truth for what makes a slider usable, shared with the response evaluator so the two
-  // can never disagree about which configurations are trustworthy.
-  const result = parseSurveySliderConfiguration(data);
-  if (result.valid) {
-    return;
-  }
-
-  for (const issue of result.issues) {
+  const hasUsableRange = data.range.min < data.range.max;
+  if (!hasUsableRange) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: issue.message,
-      path: issue.path,
+      message: "Minimum value must be less than the maximum value",
+      path: ["range"],
+    });
+  }
+
+  const hasUsableStep = data.step > 0;
+  if (!hasUsableStep) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Step must be greater than zero",
+      path: ["step"],
+    });
+  }
+
+  // Guarded so it only evaluates once the two rules above hold: comparing a step against an inverted range,
+  // or a non-positive step against anything, would report a second issue for a single mistake. A step wider
+  // than the range leaves only the minimum selectable, which the author should see here rather than discover
+  // from respondents.
+  if (hasUsableRange && hasUsableStep && data.step > data.range.max - data.range.min) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Step cannot be larger than the range",
+      path: ["step"],
     });
   }
 });

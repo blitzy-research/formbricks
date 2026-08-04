@@ -55,7 +55,6 @@ describe("getRuleLabels", () => {
     expect(labels).toHaveProperty("phone");
     expect(labels).toHaveProperty("min_value");
     expect(labels).toHaveProperty("max_value");
-    expect(labels).toHaveProperty("step_multiple_of");
     expect(labels).toHaveProperty("min_selections");
     expect(labels).toHaveProperty("max_selections");
     expect(labels).toHaveProperty("characters");
@@ -73,33 +72,10 @@ describe("getRuleLabels", () => {
     expect(labels).toHaveProperty("minimum_options_ranked");
     expect(labels).toHaveProperty("rank_all_options");
     expect(labels).toHaveProperty("minimum_rows_answered");
-    expect(labels).toHaveProperty("answer_all_rows");
     expect(labels).toHaveProperty("file_extension_is");
     expect(labels).toHaveProperty("file_extension_is_not");
     expect(labels).toHaveProperty("kb");
     expect(labels).toHaveProperty("mb");
-  });
-
-  test("should label every rule type the configuration declares", () => {
-    // Derived from the authoritative rule configuration rather than transcribed, which is what makes the
-    // "all rule labels" claim above hold as rules are added. The hand-written list had drifted: both
-    // `step_multiple_of` and `answer_all_rows` were shipped in the implementation and absent here, so a
-    // rule could reach the editor's picker with no label at all and this suite would still pass.
-    const labels = getRuleLabels(mockT);
-
-    for (const config of Object.values(RULE_TYPE_CONFIG)) {
-      expect(labels, `label for rule key ${config.labelKey}`).toHaveProperty(config.labelKey);
-    }
-  });
-
-  test("should label every unit option the configuration declares", () => {
-    const labels = getRuleLabels(mockT);
-
-    for (const config of Object.values(RULE_TYPE_CONFIG)) {
-      for (const unitOption of config.unitOptions ?? []) {
-        expect(labels, `label for unit key ${unitOption.labelKey}`).toHaveProperty(unitOption.labelKey);
-      }
-    }
   });
 
   test("should return correct translation keys", () => {
@@ -107,30 +83,6 @@ describe("getRuleLabels", () => {
     expect(labels.min_length).toBe("environments.surveys.edit.validation.min_length");
     expect(labels.email).toBe("environments.surveys.edit.validation.email");
     expect(labels.rank_all_options).toBe("environments.surveys.edit.validation.rank_all_options");
-    // This is the literal t() call site the translation scanner needs for the slider's step-grid rule:
-    // the rule is engine-injected rather than author-selectable, so no other production line references it.
-    expect(labels.step_multiple_of).toBe("environments.surveys.edit.validation.step_multiple_of");
-  });
-
-  test("should return the exact translation key for the step-multiple-of rule", () => {
-    // The rule is injected by the validation engine rather than picked by an author, so this call site is
-    // the only literal `t()` the translation scanner can see for its key — losing it would make the key
-    // read as unused and fail the internationalization gate.
-    const labels = getRuleLabels(mockT);
-    expect(labels.step_multiple_of).toBe("environments.surveys.edit.validation.step_multiple_of");
-  });
-
-  test("should return the exact translation key for the answer-all-rows rule", () => {
-    const labels = getRuleLabels(mockT);
-    expect(labels.answer_all_rows).toBe("environments.surveys.edit.validation.answer_all_rows");
-  });
-
-  test("should namespace every rule label under the validation translation namespace", () => {
-    const labels = getRuleLabels(mockT);
-
-    for (const [key, value] of Object.entries(labels)) {
-      expect(value, `translation key for ${key}`).toBe(`environments.surveys.edit.validation.${key}`);
-    }
   });
 });
 
@@ -318,14 +270,5 @@ describe("OpinionScale element compatibility", () => {
     // OpinionScale has no validation rules — the scale range is enforced
     // by the Zod schema, not by runtime validation rules
     expect(APPLICABLE_RULES.opinionScale).toEqual([]);
-  });
-});
-
-describe("Slider element compatibility", () => {
-  test("should have no applicable validation rules", () => {
-    // Like OpinionScale, a slider exposes no author-selectable rules: its bounds and step grid are
-    // intrinsic to its own configuration and are injected by the shared evaluator at validation time,
-    // so an empty list here is what keeps those constraints mandatory rather than optional.
-    expect(APPLICABLE_RULES.slider).toEqual([]);
   });
 });

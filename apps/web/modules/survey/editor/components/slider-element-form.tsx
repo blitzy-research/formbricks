@@ -7,23 +7,71 @@ import { useTranslation } from "react-i18next";
 import { TSurveySliderElement } from "@formbricks/types/surveys/elements";
 import { TSurvey } from "@formbricks/types/surveys/types";
 import { TUserLocale } from "@formbricks/types/user";
-import { extractLanguageCodes } from "@/lib/i18n/utils";
+import { createI18nString, extractLanguageCodes } from "@/lib/i18n/utils";
 import { ElementFormInput } from "@/modules/survey/components/element-form-input";
-import {
-  type TSliderNumericDrafts,
-  type TSliderNumericField,
-  buildSliderDescriptionUpdate,
-  buildSliderNumericUpdate,
-  clearSliderNumericDraft,
-  getSliderFieldIds,
-  getSliderNumericFieldText,
-  isSliderValueShown,
-  recordSliderNumericDraft,
-} from "@/modules/survey/editor/components/slider-element-form-utils";
 import { AdvancedOptionToggle } from "@/modules/ui/components/advanced-option-toggle";
 import { Button } from "@/modules/ui/components/button";
 import { Input } from "@/modules/ui/components/input";
 import { Label } from "@/modules/ui/components/label";
+
+/** The three numeric fields the panel writes. */
+type TSliderNumericField = "min" | "max" | "step";
+
+/**
+ * What the author is currently typing into each numeric field, keyed by field.
+ *
+ * A field is absent from this map whenever it is not being edited, which is what makes the element the
+ * default source of truth: an entry exists only between the first keystroke and the blur that ends it.
+ */
+type TSliderNumericDrafts = Partial<Record<TSliderNumericField, string>>;
+
+/**
+ * Reads a numeric editor field, returning the value only when the WHOLE field is a finite number.
+ *
+ * The conversion is applied to the entire trimmed field rather than scanned from its start, because a
+ * scanning parse (`Number.parseFloat`) stops at the first character it cannot use and keeps what came before
+ * it: "1e" becomes 1 and "12abc" becomes 12, writing a number the author never typed. An empty or blank field
+ * is declined explicitly, since converting it would yield `0` and silently rewrite a cleared bound to zero.
+ *
+ * `null` tells the caller not to write, leaving the value already stored on the element in place.
+ */
+const readFiniteNumber = (rawValue: string): number | null => {
+  const trimmed = rawValue.trim();
+  if (trimmed === "") {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+/**
+ * Builds the update payload for one numeric field, or `null` when the field cannot be written.
+ *
+ * The two bounds are merged into the element's existing `range` rather than replacing it, so editing the
+ * minimum cannot drop the maximum - a payload of `{ range: { min } }` satisfies
+ * `Partial<TSurveySliderElement>` and would silently leave the element with no upper bound at all. The step
+ * is written as a bare `step`, never folded into `range`. The element's own range object is never mutated.
+ *
+ * Ordering is deliberately not checked here: a minimum above the maximum is a lawful intermediate state
+ * while the author edits the pair, and the element schema is the layer that reports it.
+ */
+const buildNumericUpdate = (
+  field: TSliderNumericField,
+  rawValue: string,
+  element: TSurveySliderElement
+): Partial<TSurveySliderElement> | null => {
+  const parsed = readFiniteNumber(rawValue);
+  if (parsed === null) {
+    return null;
+  }
+
+  if (field === "step") {
+    return { step: parsed };
+  }
+
+  return { range: { ...element.range, [field]: parsed } };
+};
 
 interface SliderElementFormProps {
   localSurvey: TSurvey;
@@ -54,8 +102,13 @@ export const SliderElementForm = ({
   const surveyLanguageCodes = extractLanguageCodes(localSurvey.languages);
   const [parent] = useAutoAnimate();
 
-  // Element-scoped DOM ids, so several slider cards can be open at once without any of them colliding.
-  const { rangeMinId, rangeMaxId, stepId, showValueId } = getSliderFieldIds(element.id);
+  // Element-scoped DOM ids, so several slider cards can be open at once without any of them colliding: a
+  // document-wide id such as "rangeMin" would repeat on every card, and the browser resolves a duplicate id
+  // to the FIRST match, so a later card's label would focus the first card's input.
+  const rangeMinId = `${element.id}-range-min`;
+  const rangeMaxId = `${element.id}-range-max`;
+  const stepId = `${element.id}-step`;
+  const showValueId = `showValue-${element.id}`;
 
   // What is currently being typed, for the fields being typed into. Local state is what makes an entry that
   // is not yet a number survive on screen: a `type="number"` field reports an incomplete entry - a lone "-",
@@ -68,14 +121,11 @@ export const SliderElementForm = ({
 
   // Every keystroke is held as a draft, and written through only once the whole field reads as a finite
   // number, so the element never receives `NaN` or a partially typed value and the live preview still follows
-  // the author keystroke by keystroke rather than waiting for them to leave the field. The write itself is
-  // `buildSliderNumericUpdate`, which merges a bound into the element's existing range so editing one bound
-  // cannot drop the other. Both halves live in `slider-element-form-utils`, which is what the panel's
-  // specification executes.
+  // the author keystroke by keystroke rather than waiting for them to leave the field.
   const handleNumericChange = (field: TSliderNumericField, rawValue: string) => {
-    setNumericDrafts((current) => recordSliderNumericDraft(current, field, rawValue));
+    setNumericDrafts((current) => ({ ...current, [field]: rawValue }));
 
-    const update = buildSliderNumericUpdate(field, rawValue, element);
+    const update = buildNumericUpdate(field, rawValue, element);
     if (update === null) {
       return;
     }
@@ -87,12 +137,19 @@ export const SliderElementForm = ({
   // stored - normalised, so "1e3" reads back as 1000 - and an entry that never became a number reverts to the
   // value the element still holds rather than leaving the author looking at an empty box.
   const handleNumericBlur = (field: TSliderNumericField) => {
-    setNumericDrafts((current) => clearSliderNumericDraft(current, field));
+    setNumericDrafts((current) => {
+      if (current[field] === undefined) {
+        return current;
+      }
+
+      const { [field]: _finishedEntry, ...remaining } = current;
+      return remaining;
+    });
   };
 
   /** The text a numeric field renders: what is being typed, or the number the element holds. */
   const numericFieldValue = (field: TSliderNumericField, storedValue: number): string | number =>
-    getSliderNumericFieldText(numericDrafts, field, storedValue);
+    numericDrafts[field] ?? storedValue;
 
   return (
     <form>
@@ -143,7 +200,9 @@ export const SliderElementForm = ({
             className="mt-3"
             type="button"
             onClick={() => {
-              updateElement(elementIdx, buildSliderDescriptionUpdate(surveyLanguageCodes));
+              // Created across every language the survey declares, so the editor's own
+              // translation-completeness check has the keys it needs from the moment the field appears.
+              updateElement(elementIdx, { subheader: createI18nString("", surveyLanguageCodes) });
             }}>
             <PlusIcon className="mr-1 h-4 w-4" />
             {t("environments.surveys.edit.add_description")}
@@ -254,7 +313,9 @@ export const SliderElementForm = ({
 
       {/* Show selected value toggle — enabled by default, so only an explicit false turns it off */}
       <AdvancedOptionToggle
-        isChecked={isSliderValueShown(element)}
+        // `showValue` is optional and defaults to true, so only an explicit `false` turns the readout off.
+        // Reading it as truthy would leave a slider whose author never touched the toggle with it hidden.
+        isChecked={element.showValue !== false}
         onToggle={(checked: boolean) => {
           updateElement(elementIdx, {
             showValue: checked,

@@ -1067,80 +1067,33 @@ export const getElementSummary = async (
         break;
       }
       case TSurveyElementTypeEnum.Slider: {
-        // Every numeric answer, collected so the mean can be taken in one reduction over all of them
-        // rather than folded in place. A Slider's bounds are author-configured and constrained only to
-        // describe a finite span, so both of the in-place forms break on answers near the top of the
-        // double range: a running sum overflows to Infinity before the division happens, and the
-        // textbook incremental mean `mean += (answer - mean) / n` overflows on the difference itself -
-        // for the answers 1e308, 1e308 and -1e308 it reaches -Infinity on the second answer and NaN on
-        // the third, and a mean whose true value is about 3.33e307 would be reported as 0. Collecting
-        // first is also what the choice-based cases in this switch already do, so the allocation is no
-        // new cost in kind.
-        const answeredValues: number[] = [];
+        let totalResponseCount = 0;
+        let totalValue = 0;
         let dismissed = 0;
 
         responses.forEach((response) => {
           const answer = response.data[element.id];
           if (typeof answer === "number") {
-            answeredValues.push(answer);
+            totalResponseCount++;
+            totalValue += answer;
           } else if (response.ttc && response.ttc[element.id] > 0) {
             dismissed++;
           }
         });
 
-        const totalResponseCount = answeredValues.length;
-
-        // Neumaier's compensated summation, which carries the low-order bits each addition rounds away and
-        // is what keeps a mean of many fine answers faithful where a plain sum would drift.
-        //
-        // WHAT is summed depends on the magnitudes involved, because the two forms fail in opposite
-        // directions. Summing the answers and dividing once is exact down to the subnormals, but a running
-        // total can overflow to Infinity for answers near the top of the double range. Summing each answer's
-        // SHARE of the mean - `answer / count` - cannot overflow, because every term is at most one answer's
-        // own magnitude and the exact sum lies between the smallest and the largest answer, but it destroys a
-        // set of answers so small that dividing them underflows to zero. So the answers themselves are summed
-        // whenever the total demonstrably cannot overflow - which is every ordinary survey - and the shares
-        // only where it could.
-        const largestMagnitude = answeredValues.reduce(
-          (largest, answer) => Math.max(largest, Math.abs(answer)),
-          0
-        );
-        const sumCannotOverflow = Number.isFinite(largestMagnitude * totalResponseCount);
-
-        let runningTotal = 0;
-        let roundedOffBits = 0;
-        answeredValues.forEach((answer) => {
-          const term = sumCannotOverflow ? answer : answer / totalResponseCount;
-          const carried = runningTotal + term;
-          roundedOffBits +=
-            Math.abs(runningTotal) >= Math.abs(term)
-              ? runningTotal - carried + term
-              : term - carried + runningTotal;
-          runningTotal = carried;
-        });
-        // An empty answer set never enters the loop, so it yields 0 rather than a division by zero.
-        const compensatedTotal = runningTotal + roundedOffBits;
-        const mean = sumCannotOverflow
-          ? totalResponseCount > 0
-            ? compensatedTotal / totalResponseCount
-            : 0
-          : compensatedTotal;
+        // `|| 0` covers the no-answer case, where the division is NaN, exactly as the OpinionScale case
+        // above does.
+        const average = convertFloatTo2Decimal(totalValue / totalResponseCount) || 0;
 
         summary.push({
           type: element.type,
           element,
           responseCount: totalResponseCount,
-          // The mean is published exactly as it was computed, at full precision. Rounding it here - as this
-          // folder's shared two-decimal helper would - is lossy for any range finer than 0.01 and reports 0
-          // for a mean large enough to overflow that helper's own `mean * 100`, and neither loss can be
-          // recovered by the card. How many decimals to SHOW is a presentation decision, and it is taken from
-          // the element's own step and range in `sliderSummaryDisplay.ts`.
-          //
-          // The finiteness guard stays: a non-finite average would neither satisfy
-          // `ZSurveyElementSummarySlider` (`average: z.number()`) nor survive the JSON serialization that
-          // carries this summary to the client, where it would arrive as null. It covers the one input the
-          // arithmetic above cannot absorb - a non-finite value already stored as an answer.
-          average: Number.isFinite(mean) ? mean : 0,
+          // `ZSurveyElementSummarySlider` declares this `z.number().finite()`, and the bound is what the
+          // guard here upholds: `z.number()` on its own rejects NaN but ACCEPTS Infinity, and a non-finite
+          // mean would serialize to null on its way to the client. Only answers near the top of the double
+          // range can reach that, which no ordinary survey produces.
+          average: Number.isFinite(average) ? average : 0,
           dismissed: {
             count: dismissed,
           },

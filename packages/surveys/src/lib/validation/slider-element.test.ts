@@ -241,15 +241,14 @@ describe("slider grid rejection holds at magnitudes where floating point stops b
   const HIGH_MAGNITUDE_ELEMENT_ID = "sliderHigh";
 
   /**
-   * A range wide enough that its values scale past `Number.MAX_SAFE_INTEGER` on a 0.2 grid.
+   * A 0.2 grid whose values scale past `Number.MAX_SAFE_INTEGER`.
    *
-   * A grid this fine at this magnitude is no longer answerable: the spacing between representable doubles at
-   * 1e15 is 0.125, so the control's own reconstruction of `min + n * step` rounds onto a neighbouring double
-   * and would offer values half a step off the grid it is describing. The configuration is therefore refused
-   * by the schema - see the representability cases below - and this element is built around that schema so
-   * the two layers that judge an already-persisted survey can be pinned independently: the evaluator, which
-   * must fail closed, and the grid rule itself, whose arithmetic must stay exact at this magnitude because a
-   * value posted straight to a response endpoint reaches it directly.
+   * The configuration itself is legitimate - `min < max`, a positive step no wider than the range - so an
+   * author can publish it and the evaluator injects the range and grid rules for it exactly as it does for
+   * the reference element. What this suite pins is the grid rule's arithmetic at a magnitude where double
+   * arithmetic is no longer exact: the spacing between representable doubles at 1e15 is 0.125, so
+   * reconstructing the nearest grid point in doubles lands back on the submitted value and would measure a
+   * drift of zero for a value half a step off the grid.
    */
   const buildHighMagnitudeElement = (): TSurveySliderElement =>
     ({
@@ -261,31 +260,16 @@ describe("slider grid rejection holds at magnitudes where floating point stops b
       step: 0.2,
     }) as unknown as TSurveySliderElement;
 
-  test("the high-magnitude configuration is refused by the schema, so no author can publish it", () => {
-    const parsed = ZSurveySliderElement.safeParse(buildHighMagnitudeElement());
-
-    expect(parsed.success).toBe(false);
-    if (parsed.success) {
-      throw new Error("Expected the configuration to be rejected, but it parsed successfully.");
-    }
-
-    expect(parsed.error.issues).toHaveLength(1);
-    expect(parsed.error.issues[0].path).toEqual(["step"]);
-    expect(parsed.error.issues[0].message).toBe(
-      "The range and the step ask for more precision than a number can hold"
-    );
+  test("the high-magnitude configuration is a lawful one, so its answers are judged by the rules", () => {
+    expect(ZSurveySliderElement.safeParse(buildHighMagnitudeElement()).success).toBe(true);
   });
 
   // Each value below is a whole half-step off the grid - the largest miss the grid admits, not a rounding
-  // artefact - and each is in range. Reconstructing the nearest grid point in DOUBLE arithmetic returns the
-  // submitted value itself at this magnitude, measuring a drift of exactly zero and accepting it, which is
-  // why the rule decides the grid with exact decimal arithmetic instead.
+  // artefact - and each is in range.
   test.each([
     ["a half-step above a grid point", 1000000000000000.5],
     ["a half-step below the next grid point", 1000000000000000.9],
   ])("should reject %s at the grid rule itself", (_label, value) => {
-    // The rule is exercised directly here: the evaluator no longer injects it for this element, because the
-    // configuration it would derive the grid from is one it refuses to trust.
     expect(validators.stepMultipleOf.check(value, { step: 0.2, offset: 0 }, {} as TSurveyElement).valid).toBe(
       false
     );
@@ -300,25 +284,25 @@ describe("slider grid rejection holds at magnitudes where floating point stops b
     ).toBe(true);
   });
 
-  test("should fail closed through validateBlockResponses when such a survey is already persisted", () => {
-    // The draft autosave path persists an element without parsing the schema, so this configuration can
-    // still reach a live survey. Every answer submitted to it is refused - the aligned one as well as the
-    // off-grid one - because an element whose grid cannot be trusted cannot be used to accept anything.
+  test("should carry that exactness through validateBlockResponses, which is what every route reaches", () => {
     const element = buildHighMagnitudeElement();
 
-    for (const value of [1000000000000000.5, 1000000000000000.4]) {
-      const errorMap = validateBlockResponses([element], { [HIGH_MAGNITUDE_ELEMENT_ID]: value }, "en");
+    const offGrid = validateBlockResponses(
+      [element],
+      { [HIGH_MAGNITUDE_ELEMENT_ID]: 1000000000000000.5 },
+      "en"
+    );
 
-      expect(Object.keys(errorMap)).toEqual([HIGH_MAGNITUDE_ELEMENT_ID]);
-      expect(errorMap[HIGH_MAGNITUDE_ELEMENT_ID].map((error) => error.ruleId)).toEqual([
-        "sliderConfiguration",
-      ]);
-      expect(errorMap[HIGH_MAGNITUDE_ELEMENT_ID].map((error) => error.ruleType)).toEqual([
-        "elementConfiguration",
-      ]);
-    }
+    expect(Object.keys(offGrid)).toEqual([HIGH_MAGNITUDE_ELEMENT_ID]);
+    expect(offGrid[HIGH_MAGNITUDE_ELEMENT_ID].map((error) => error.ruleType)).toEqual(["stepMultipleOf"]);
 
-    expect(validateElementResponse(element, 1000000000000000.5, "en").valid).toBe(false);
+    // The aligned value at the same magnitude is accepted, so the rejection above is attributable to the
+    // grid rather than to the size of the number.
+    expect(
+      Object.keys(
+        validateBlockResponses([element], { [HIGH_MAGNITUDE_ELEMENT_ID]: 1000000000000000.4 }, "en")
+      )
+    ).toEqual([]);
   });
 });
 
@@ -387,11 +371,11 @@ describe("slider answers of the wrong shape are rejected whether or not the elem
 
 /**
  * Criterion (a) proves one well-formed configuration round-trips, which an implementation with no
- * refinements at all would also satisfy. The contract's other half is what the schema must REFUSE:
- * `min >= max` and `step <= 0` are rejections the specification states outright, and the four guards
- * after them exist because a configuration can be individually well-typed yet still describe a grid on
- * which no answer could ever validate. Each case below pins the exact `path` and message, because the
- * path is what steers the editor's error to the offending field and the message is what the author reads.
+ * refinements at all would also satisfy. The contract's other half is what the schema must REFUSE, and it
+ * refuses exactly three things: `min >= max` and `step <= 0`, which the specification states outright, and
+ * a step wider than the range, which would leave only the minimum selectable. Nothing else is a
+ * publish-time restriction. Each case below pins the exact `path` and message, because the path is what
+ * steers the editor's error to the offending field and the message is what the author reads.
  */
 describe("slider schema rejects a configuration no answer could satisfy", () => {
   /**
@@ -452,79 +436,13 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
       path: ["step"],
       message: "Step must be greater than zero",
     },
-    // --- The derived guards: each admits a grid carrying no selectable answer -------------------
+    // --- The one derived guard: a grid carrying a single selectable answer -----------------------
     {
       label: "a step wider than the range",
       range: { min: 0, max: 10 },
       step: 20,
       path: ["step"],
       message: "Step cannot be larger than the range",
-    },
-    // --- Representability: a grid whose points a double cannot tell apart is not answerable -----
-    {
-      // The reviewed counterexample. Adjacent doubles at 1e21 are 131072 apart, so a 0.3 grid there has
-      // 436907 nominal points sharing two representable values, and every interaction above the midpoint
-      // would submit a value 0.1 off the grid - which the response rule rejects, tolerating only 3e-7.
-      label: "a fine grid on an origin past the safe integer range",
-      range: { min: 1e21, max: 1.0000000000000001e21 },
-      step: 0.3,
-      path: ["step"],
-      message: "The range and the step ask for more precision than a number can hold",
-    },
-    {
-      // The other direction of the same defect: 1e20 points, of which a double can index only the first
-      // 9e15, so all but a ten-thousandth of the range would be unreachable.
-      label: "a step finer than the range can express",
-      range: { min: 0, max: 1 },
-      step: 1e-20,
-      path: ["step"],
-      message: "The range and the step ask for more precision than a number can hold",
-    },
-    {
-      // Neither number is unusual on its own - a range an author could plausibly type, and a step ten times
-      // coarser than a cent - but together they ask for sixteen significant digits, one more than a double
-      // carries: the spacing between doubles at 1e15 is 0.125, over half of this step.
-      label: "a decimal grid whose points scale past a double",
-      range: { min: 0, max: 1e15 },
-      step: 0.2,
-      path: ["step"],
-      message: "The range and the step ask for more precision than a number can hold",
-    },
-    // --- The numeric domain: bounds and step must be finite, and so must the span they describe --
-    {
-      // Each bad bound is named individually, so the message points at the field the author typed rather
-      // than at the pair.
-      label: "an infinite minimum",
-      range: { min: Number.NEGATIVE_INFINITY, max: 100 },
-      step: 5,
-      path: ["range", "min"],
-      message: "Minimum value must be a finite number",
-    },
-    {
-      label: "an infinite maximum",
-      range: { min: 0, max: Number.POSITIVE_INFINITY },
-      step: 5,
-      path: ["range", "max"],
-      message: "Maximum value must be a finite number",
-    },
-    {
-      // Both bounds are numbers the author could have typed, so the complaint is about the pair rather
-      // than about either one of them.
-      label: "two finite bounds whose span overflows",
-      range: { min: -1e308, max: 1e308 },
-      step: 5,
-      path: ["range"],
-      message: "The range between the minimum and the maximum is too wide",
-    },
-    {
-      // A step has to be a finite number greater than zero, and an infinite one is neither a grid nor a
-      // number the author can correct by narrowing it - so it is reported as the same single mistake a
-      // zero or negative step is, pointed at the field they typed.
-      label: "an infinite step",
-      range: { min: 0, max: 100 },
-      step: Number.POSITIVE_INFINITY,
-      path: ["step"],
-      message: "Step must be greater than zero",
     },
   ];
 
@@ -597,16 +515,20 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
   });
 
   /**
-   * One numeric domain, agreed across the entry points that read it.
+   * One contract, read by both entry points.
    *
-   * The schema owns the configuration, so it is the schema that decides what a representable slider is. The
-   * response evaluator reads the same three facts before injecting the range and grid rules, and the two must
-   * agree in BOTH directions: a configuration the schema accepts must be one the evaluator can check answers
-   * against, or an author could save a slider that rejects every answer submitted to it; and a configuration
-   * the schema refuses must be one the evaluator fails closed on, because such an element can still reach the
-   * runtime through the editor's draft autosave path, which does not parse the element schema.
+   * The schema decides which configurations an author may publish. The response evaluator reads the SAME
+   * three facts - `min < max`, `step > 0`, a step no wider than the range - before injecting the range and
+   * grid rules, so a configuration the schema accepts is one the evaluator can check answers against, and a
+   * configuration the schema refuses is one the evaluator fails closed on. The second direction matters
+   * because such an element can still reach the runtime through the editor's draft autosave path, which does
+   * not parse the element schema.
    *
-   * These cases exercise the boundary itself rather than the ordinary domain, which is covered above.
+   * The evaluator's read is additionally DEFENSIVE, which is the one place the two deliberately diverge: it
+   * also declines a bound or step that is not a finite number, because the compiled type only promises these
+   * fields exist and the three rules are derived from these very figures. That is a fail-closed refusal at
+   * response time, not a restriction on what an author may save - and it is asserted below so the divergence
+   * is recorded rather than incidental.
    */
   describe("the schema and the response evaluator share one numeric domain", () => {
     const buildSliderWithConfig = (config: {
@@ -621,24 +543,18 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
         ...config,
       }) as unknown as TSurveySliderElement;
 
-    const unrepresentableConfigs: { label: string; range: { min: number; max: number }; step: number }[] = [
-      { label: "an infinite minimum", range: { min: Number.NEGATIVE_INFINITY, max: 100 }, step: 5 },
-      { label: "an infinite maximum", range: { min: 0, max: Number.POSITIVE_INFINITY }, step: 5 },
-      { label: "a span that overflows", range: { min: -1e308, max: 1e308 }, step: 5 },
-      { label: "an infinite step", range: { min: 0, max: 100 }, step: Number.POSITIVE_INFINITY },
+    const unusableConfigs: { label: string; range: { min: number; max: number }; step: number }[] = [
+      { label: "a minimum equal to the maximum", range: { min: 10, max: 10 }, step: 1 },
+      { label: "a minimum above the maximum", range: { min: 50, max: 10 }, step: 1 },
+      { label: "a step of zero", range: { min: 0, max: 100 }, step: 0 },
+      { label: "a negative step", range: { min: 0, max: 100 }, step: -5 },
       { label: "a step wider than the span", range: { min: 0, max: 10 }, step: 20 },
-      // The representability cases: each describes a grid whose points a double cannot tell apart, so the
-      // control could only offer values this very evaluator would then reject. See the dedicated suite below.
-      {
-        label: "a fine grid on an origin past the safe integer range",
-        range: { min: 1e21, max: 1.0000000000000001e21 },
-        step: 0.3,
-      },
-      { label: "a step finer than the range can express", range: { min: 0, max: 1 }, step: 1e-20 },
-      { label: "a decimal grid whose points scale past a double", range: { min: 0, max: 1e15 }, step: 0.2 },
+      // An infinite step is wider than every finite range, so it is refused by the third refinement rather
+      // than needing a rule of its own.
+      { label: "an infinite step", range: { min: 0, max: 100 }, step: Number.POSITIVE_INFINITY },
     ];
 
-    test.each(unrepresentableConfigs)(
+    test.each(unusableConfigs)(
       "rejects $label at the schema and fails closed at the evaluator",
       ({ range, step }) => {
         expect(parseSliderConfig({ range, step }).success).toBe(false);
@@ -653,24 +569,59 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
     );
 
     test.each([
-      { label: "the reference grid", range: { min: 0, max: 100 }, step: 5, value: 50 },
-      // The widest grid the representability limit admits on a whole-number scale: every one of its
-      // 1e15 points is an integer a double holds exactly, so nothing about the magnitude alone disqualifies
-      // a configuration - it is the precision the range and the step ask for TOGETHER that does.
-      { label: "a grid at the representable extremes", range: { min: 0, max: 1e15 }, step: 1, value: 1e15 },
-      { label: "a grid offset from zero", range: { min: 10, max: 50 }, step: 5, value: 15 },
-    ] as { label: string; range: { min: number; max: number }; step: number; value?: number }[])(
+      { label: "an infinite minimum", range: { min: Number.NEGATIVE_INFINITY, max: 100 }, step: 5 },
+      { label: "an infinite maximum", range: { min: 0, max: Number.POSITIVE_INFINITY }, step: 5 },
+    ])(
+      "accepts $label at the schema, because `z.number()` admits it, and still fails closed at the evaluator",
+      ({ range, step }) => {
+        // The publish-time contract is the three refinements and nothing more, so these parse. The
+        // evaluator's defensive read declines them, because a rule derived from an infinite bound places the
+        // grid nowhere - so the answer is refused with the accurate structural reason instead.
+        expect(parseSliderConfig({ range, step }).success).toBe(true);
+
+        const result = validateElementResponse(buildSliderWithConfig({ range, step }), 50, "en");
+
+        expect(result.valid).toBe(false);
+        expect(result.errors.map((error) => error.ruleId)).toEqual(["sliderConfiguration"]);
+        expect(result.errors.map((error) => error.ruleType)).toEqual(["elementConfiguration"]);
+      }
+    );
+
+    // `above` is stated per case rather than derived as `max + step`, because a step finer than its own
+    // maximum can express adds nothing to it: `1 + 1e-20` is exactly `1` in doubles, so the derived probe
+    // would land back on the maximum and prove nothing.
+    test.each([
+      { label: "the reference grid", range: { min: 0, max: 100 }, step: 5, value: 50, above: 105 },
+      // A whole-number grid of 1e15 points: every one of them is an integer a double holds exactly, so
+      // magnitude alone disqualifies nothing.
+      {
+        label: "a grid at whole-number extremes",
+        range: { min: 0, max: 1e15 },
+        step: 1,
+        value: 1e15,
+        above: 2e15,
+      },
+      { label: "a grid offset from zero", range: { min: 10, max: 50 }, step: 5, value: 15, above: 55 },
+      // A grid an earlier, over-restrictive precision policy refused. It is lawful under the frozen
+      // contract, so it must be checked by the injected rules like every other lawful configuration.
+      {
+        label: "a grid finer than the range's own scale",
+        range: { min: 0, max: 1 },
+        step: 1e-20,
+        value: 0,
+        above: 2,
+      },
+    ])(
       "accepts $label at the schema and checks answers against it at the evaluator",
-      ({ range, step, value }) => {
+      ({ range, step, value, above }) => {
         expect(parseSliderConfig({ range, step }).success).toBe(true);
 
         const element = buildSliderWithConfig({ range, step });
-        const onGrid = value ?? range.min;
 
-        expect(validateElementResponse(element, onGrid, "en").valid).toBe(true);
+        expect(validateElementResponse(element, value, "en").valid).toBe(true);
         // The configuration is trusted, so the rules that constrain the answer are the injected ones -
         // never the structural "this element cannot be checked" refusal.
-        const aboveMaximum = validateElementResponse(element, range.max + step, "en");
+        const aboveMaximum = validateElementResponse(element, above, "en");
 
         expect(aboveMaximum.valid).toBe(false);
         expect(aboveMaximum.errors.some((error) => error.ruleId === "sliderConfiguration")).toBe(false);

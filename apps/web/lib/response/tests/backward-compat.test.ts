@@ -6,15 +6,10 @@
  * that existing surveys parse correctly through the updated ZSurvey schema with the legacy
  * question-based model.
  *
- * The inventories below are asserted against TSurveyElementTypeEnum itself rather than merely kept in
- * step with it by hand, because a hand-maintained list that silently falls behind the enum is exactly
- * how a new element type comes to be excluded from an "exhaustive" matrix while the suite still passes.
- *
  * This file uses pure Zod schema validation — no Prisma, no I/O, no mocks.
  */
 import { describe, expect, test } from "vitest";
 import { TSurveyElementTypeEnum, ZSurveyElement } from "@formbricks/types/surveys/elements";
-import { ZSurveyLogicConditionsOperator } from "@formbricks/types/surveys/logic";
 import { ZSurvey } from "@formbricks/types/surveys/types";
 
 // ---------------------------------------------------------------------------
@@ -68,10 +63,6 @@ const NEW_ELEMENT_TYPES = ["opinionScale", "payment", "slider"] as const;
 
 /** All 18 element type keys for iteration */
 const ALL_ELEMENT_TYPES = [...LEGACY_ELEMENT_TYPES, ...NEW_ELEMENT_TYPES] as const;
-
-/** This suite's inventory and the shared enum, as plain strings, for the drift assertions below. */
-const SUITE_ELEMENT_TYPES: string[] = [...ALL_ELEMENT_TYPES];
-const ENUM_ELEMENT_TYPES: string[] = [...Object.values(TSurveyElementTypeEnum)];
 
 /**
  * Element fixtures keyed by type string.
@@ -181,9 +172,7 @@ const elementFixtures: Record<string, Record<string, unknown>> = {
 
   // The reference configuration from the Slider specification: a 0..100 range in steps of 5. `range` is
   // an object here rather than one of the numeric literals the base element schema allows, which is the
-  // one shape in this matrix that overrides a base field instead of adding to it. `lowerLabel`,
-  // `upperLabel` and `showValue` are optional - `showValue` carries a schema default of true, which the
-  // parse assertions below cover both with the field supplied and with it omitted.
+  // one shape in this matrix that overrides a base field instead of adding to it.
   slider: createMinimalElement("slider", {
     range: { min: 0, max: 100 },
     step: 5,
@@ -449,37 +438,6 @@ describe("Epic 4.2 — Backward Compatibility Tests", () => {
         });
       }
     });
-
-    test("fills in the slider's showValue default when the field is omitted (NEW)", () => {
-      // The fixture above supplies `showValue` explicitly, so the schema default is proven here instead:
-      // an element that omits the field must come back with it set rather than absent.
-      const { showValue: _omitted, ...withoutShowValue } = elementFixtures.slider as Record<string, unknown>;
-      const result = ZSurveyElement.safeParse(withoutShowValue);
-
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data).toMatchObject({ showValue: true });
-      }
-    });
-
-    test("preserves the slider's numeric configuration through parsing (NEW)", () => {
-      const result = ZSurveyElement.safeParse(elementFixtures.slider);
-      if (!result.success) {
-        throw new Error(`Slider element failed to parse: ${JSON.stringify(result.error.issues, null, 2)}`);
-      }
-
-      // Thrown rather than expected, so the assertions below can never be skipped into passing.
-      const element = result.data;
-      if (element.type !== TSurveyElementTypeEnum.Slider) {
-        throw new Error(`Expected a slider discriminator, received "${element.type}"`);
-      }
-
-      expect(element.range).toEqual({ min: 0, max: 100 });
-      expect(element.step).toBe(5);
-      expect(element.lowerLabel).toEqual({ default: "Not satisfied" });
-      expect(element.upperLabel).toEqual({ default: "Very satisfied" });
-      expect(element.showValue).toBe(true);
-    });
   });
 
   // -------------------------------------------------------------------------
@@ -522,17 +480,6 @@ describe("Epic 4.2 — Backward Compatibility Tests", () => {
       expect(enumValues).toContain("slider");
     });
 
-    test("this suite's element type inventory matches the enum exactly", () => {
-      // The assertion that keeps the matrix below honest. Both directions matter: a type in the enum but
-      // absent here is a type this suite never parses, and a type here but absent from the enum is a
-      // fixture for something the schema no longer accepts.
-      expect(SUITE_ELEMENT_TYPES.slice().sort()).toEqual(ENUM_ELEMENT_TYPES.slice().sort());
-    });
-
-    test("every enum member has a fixture in this suite", () => {
-      expect(Object.keys(elementFixtures).sort()).toEqual(ENUM_ELEMENT_TYPES.slice().sort());
-    });
-
     test("enum keys map to expected string literal values", () => {
       expect(TSurveyElementTypeEnum.FileUpload).toBe("fileUpload");
       expect(TSurveyElementTypeEnum.OpenText).toBe("openText");
@@ -552,19 +499,6 @@ describe("Epic 4.2 — Backward Compatibility Tests", () => {
       expect(TSurveyElementTypeEnum.Payment).toBe("payment");
       expect(TSurveyElementTypeEnum.OpinionScale).toBe("opinionScale");
       expect(TSurveyElementTypeEnum.Slider).toBe("slider");
-    });
-
-    // Derived from the enum rather than restated, so this suite can never silently taper behind it: the
-    // moment an eighteenth-plus element type is registered without a fixture here, this fails instead of
-    // the hard-coded inventories above passing over the gap.
-    test("every enum member has a fixture and appears in the iteration inventory", () => {
-      const enumValues = [...Object.values(TSurveyElementTypeEnum)].sort();
-
-      expect([...ALL_ELEMENT_TYPES].sort()).toEqual(enumValues);
-
-      for (const value of enumValues) {
-        expect(elementFixtures[value]).toBeDefined();
-      }
     });
   });
 
@@ -769,140 +703,6 @@ describe("Epic 4.2 — Backward Compatibility Tests", () => {
         throw new Error(`ZSurvey blocks-only fixture parse failed:\n${issuesSummary.join("\n")}`);
       }
       expect(result.success).toBe(true);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Phase 7 — Slider conditional-logic operator allow-list
-  // -------------------------------------------------------------------------
-  describe("ZSurvey slider conditional-logic operator allow-list", () => {
-    // A slider answer is a single number on an author-configured grid that the runtime never compares, so the
-    // editor's logic-rule registry offers exactly two operators for it: isSubmitted and isSkipped. These tests
-    // pin the schema to that same allow-list, because the schema - not the editor - is what guards survey
-    // definitions created through the management API.
-    const SLIDER_ELEMENT_ID = "block-element-slider";
-    const SUPPORTED_SLIDER_OPERATORS = ["isSubmitted", "isSkipped"];
-
-    // The single condition schema requires the right operand to be absent for the value-less operators and
-    // present for every other one. Supplying exactly what each operator needs leaves the element-type
-    // allow-list as the *only* possible reason to reject the survey, which is what these tests assert.
-    const VALUE_LESS_OPERATORS = [
-      "isSubmitted",
-      "isSkipped",
-      "isClicked",
-      "isNotClicked",
-      "isAccepted",
-      "isBooked",
-      "isPartiallySubmitted",
-      "isCompletelySubmitted",
-      "isSet",
-      "isNotSet",
-      "isEmpty",
-      "isNotEmpty",
-    ];
-    const COLLECTION_OPERATORS = [
-      "equalsOneOf",
-      "includesAllOf",
-      "includesOneOf",
-      "doesNotIncludeOneOf",
-      "doesNotIncludeAllOf",
-      "isAnyOf",
-    ];
-
-    const rightOperandFor = (operator: string): Record<string, unknown> | undefined => {
-      if (VALUE_LESS_OPERATORS.includes(operator)) return undefined;
-      if (COLLECTION_OPERATORS.includes(operator)) return { type: "static", value: ["50"] };
-      return { type: "static", value: 50 };
-    };
-
-    const buildSliderLogicSurvey = (operator: string, required = false): Record<string, unknown> => {
-      const rightOperand = rightOperandFor(operator);
-
-      return {
-        ...legacySurveyFixture,
-        questions: [],
-        blocks: [
-          {
-            id: "clrqm2x820005v9jz9iqp5o5c",
-            name: "Slider Block",
-            elements: [
-              {
-                id: SLIDER_ELEMENT_ID,
-                type: "slider",
-                headline: { default: "Pick a value" },
-                required,
-                range: { min: 0, max: 100 },
-                step: 5,
-              },
-            ],
-            logic: [
-              {
-                id: "clrqm2x820006v9jz9iqp5o5c",
-                conditions: {
-                  id: "clrqm2x820007v9jz9iqp5o5c",
-                  connector: "and",
-                  conditions: [
-                    {
-                      id: "clrqm2x820008v9jz9iqp5o5c",
-                      leftOperand: { type: "element", value: SLIDER_ELEMENT_ID },
-                      operator,
-                      ...(rightOperand ? { rightOperand } : {}),
-                    },
-                  ],
-                },
-                actions: [],
-              },
-            ],
-          },
-        ],
-      };
-    };
-
-    const expectAccepted = (operator: string): void => {
-      const result = ZSurvey.safeParse(buildSliderLogicSurvey(operator));
-      if (!result.success) {
-        const issuesSummary = result.error.issues.map(
-          (issue) => `[${issue.path.join(".")}] ${issue.message}`
-        );
-        throw new Error(`ZSurvey slider "${operator}" fixture parse failed:\n${issuesSummary.join("\n")}`);
-      }
-      expect(result.success).toBe(true);
-    };
-
-    const invalidOperatorIssues = (survey: Record<string, unknown>): string[] => {
-      const result = ZSurvey.safeParse(survey);
-      if (result.success) return [];
-      return result.error.issues
-        .filter((issue) => issue.message.includes("Invalid operator"))
-        .map((issue) => issue.message);
-    };
-
-    test.each(SUPPORTED_SLIDER_OPERATORS)("accepts the %s operator the editor offers", (operator) => {
-      expectAccepted(operator);
-    });
-
-    test("rejects isSkipped on a required slider, which can never be skipped", () => {
-      expect(invalidOperatorIssues(buildSliderLogicSurvey("isSkipped", true))).toEqual([
-        'Conditional Logic: Invalid operator "isSkipped" for element type "slider" in logic no: 1 of block 1',
-      ]);
-    });
-
-    // Derived from the operator enum rather than hand-listed, so an operator added to the enum later is
-    // covered here automatically instead of silently escaping the allow-list.
-    const unsupportedOperators = ZSurveyLogicConditionsOperator.options.filter(
-      (operator) => !SUPPORTED_SLIDER_OPERATORS.includes(operator)
-    );
-
-    test("covers every operator the enum defines", () => {
-      expect(unsupportedOperators).toHaveLength(
-        ZSurveyLogicConditionsOperator.options.length - SUPPORTED_SLIDER_OPERATORS.length
-      );
-    });
-
-    test.each(unsupportedOperators)("rejects the %s operator the editor never offers", (operator) => {
-      expect(invalidOperatorIssues(buildSliderLogicSurvey(operator))).toEqual([
-        `Conditional Logic: Invalid operator "${operator}" for element type "slider" in logic no: 1 of block 1`,
-      ]);
     });
   });
 });

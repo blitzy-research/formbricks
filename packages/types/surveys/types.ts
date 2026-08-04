@@ -4347,13 +4347,13 @@ export const ZSurveyElementSummarySlider = z.object({
   element: ZSurveySliderElement,
   responseCount: z.number(),
   /**
-   * The mean of the submitted values, unrounded.
+   * The mean of the submitted values.
    *
-   * A Slider's precision is whatever its author configured, so this figure is carried at full precision and
-   * how many decimals to SHOW is decided by the card from the element's own step and range. Rounding it here
-   * would report 0 for every answer on a range finer than the rounding.
+   * `.finite()` is load-bearing: in the installed Zod, `z.number()` rejects `NaN` but ACCEPTS `Infinity` and
+   * `-Infinity`, and a non-finite mean serializes to `null` on its way to the client. Declaring the bound
+   * here is what stops such a summary - cached, or assembled by hand - from being accepted as valid.
    */
-  average: z.number(),
+  average: z.number().finite(),
   dismissed: z.object({
     count: z.number(),
   }),

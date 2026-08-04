@@ -1099,153 +1099,22 @@ describe("transformToTypeformPayload", () => {
   });
 
   // =========================================================================
-  // 9. Legacy Number Branch — Known-Defect Characterization
+  // 9. Numeric Answer Integrity Tests
   // =========================================================================
 
   /**
-   * CHARACTERIZATION, NOT A CORRECTNESS CONTRACT.
+   * The slider's side of the shared `number` branch.
    *
-   * Rating, nps and opinionScale published their numeric answers through `Number()` coercion long before the
-   * slider existed, and they still do. Some of what that produces is a defect: an empty string and an empty
-   * array both become `0`, an empty record becomes `NaN`, and an infinity is published as an infinity. None of
-   * those is a value a webhook consumer can act on, and two of them are not even transportable - `NaN` is
-   * rejected outright by `ZTypeformCompatiblePayload`, and an infinity does not survive JSON serialisation.
+   * Its answer contract is exactly one number and the shared evaluator rejects every other shape at ingress,
+   * so anything else in its slot is corruption rather than an answer. Coercing it would be wrong in both
+   * directions: `Number("")` and `Number([])` are `0`, which for a slider whose range starts at 0 is
+   * indistinguishable from a real selection, while `Number({})` is `NaN`, which has no JSON representation and
+   * is rejected outright by ZTypeformCompatiblePayload. The slider therefore omits the answer, which is
+   * already how an unanswered question is reported.
    *
-   * These tests exist to describe that behaviour precisely, not to bless it. They are here for two reasons.
-   * First, this change must not alter what those three element types publish - narrowing the shared branch
-   * would change established output for question types the slider feature does not touch - so the current
-   * behaviour has to be recorded or it cannot be shown to be unchanged. Second, recording it is what makes the
-   * defect actionable: the negative-contract assertions below pin that the invalid outputs ARE invalid, so
-   * whoever hardens this branch has a failing statement of the intended end state to work against rather than
-   * a green suite that looks like approval.
-   *
-   * The slider is not part of this: its answer contract is exactly one number, it omits anything else, and
-   * that stricter behaviour is asserted as correctness in section 10.
-   */
-  describe("legacy number answer coercion for rating, nps and opinionScale (known defect)", () => {
-    const transformWithData = (overrides: Record<string, unknown>) => {
-      const data = { ...mockResponse.data, ...overrides };
-      const response = { ...mockResponse, data } as unknown as TResponse;
-      return transformToTypeformPayload(response, mockSurvey, { ...data });
-    };
-
-    test("should still coerce a rating answered with an empty string to 0", () => {
-      const result = transformWithData({ q_rating: "" });
-      const answer = result.answers.find((a) => a.field.id === "q_rating");
-
-      expect(answer).toBeDefined();
-      expect(answer?.number).toBe(0);
-      // No answer is withheld: every other answered element is published exactly as before
-      expect(result.answers).toHaveLength(17);
-      expect(result.answers.find((a) => a.field.id === "q_nps")?.number).toBe(9);
-    });
-
-    test("should still coerce a rating answered with a whitespace-only string to 0", () => {
-      const result = transformWithData({ q_rating: "   " });
-
-      expect(result.answers.find((a) => a.field.id === "q_rating")?.number).toBe(0);
-      expect(result.answers).toHaveLength(17);
-    });
-
-    test("should still coerce an opinionScale answered with an empty array to 0", () => {
-      const result = transformWithData({ q_opinionscale: [] });
-
-      expect(result.answers.find((a) => a.field.id === "q_opinionscale")?.number).toBe(0);
-      expect(result.answers).toHaveLength(17);
-    });
-
-    test("should still publish NaN for an nps answered with an empty record", () => {
-      // `Number({})` is NaN. Recorded as it is because narrowing this branch would change what these three
-      // types publish, which is out of scope here - and paired with the negative contract below, which states
-      // that the payload it produces is invalid rather than acceptable.
-      const result = transformWithData({ q_nps: {} });
-      const answer = result.answers.find((a) => a.field.id === "q_nps");
-
-      expect(answer).toBeDefined();
-      expect(answer?.number).toBeNaN();
-      expect(result.answers).toHaveLength(17);
-    });
-
-    test("NEGATIVE CONTRACT: the payload a NaN coercion produces is schema-invalid", () => {
-      // The remediation target. `ZTypeformCompatiblePayload` declares every answer's `number` as a number and
-      // rejects NaN, so the payload above cannot legitimately be delivered at all. Pinning the rejection is
-      // what keeps the coercion recorded as a defect rather than as an accepted output: whoever hardens the
-      // shared branch - by omitting the answer, as the slider does - will find this assertion is the statement
-      // of the intended end state, and the characterization test above the one to update alongside it.
-      const result = transformWithData({ q_nps: {} });
-
-      expect(() => ZTypeformCompatiblePayload.parse(result)).toThrow();
-    });
-
-    test("NEGATIVE CONTRACT: an infinity coercion does not survive JSON transport", () => {
-      // The other half of the defect, and the one the schema does NOT catch: `z.number()` admits an infinity,
-      // so the payload parses, but `JSON.stringify` has no representation for it and emits `null`. A consumer
-      // therefore receives a null where a rating was expected, which is indistinguishable from an absent
-      // answer - the same corruption the slider avoids by omitting the answer outright.
-      const result = transformWithData({ q_rating: Number.POSITIVE_INFINITY });
-      const answer = result.answers.find((a) => a.field.id === "q_rating");
-
-      expect(answer?.number).toBe(Number.POSITIVE_INFINITY);
-
-      const transported = JSON.parse(JSON.stringify(result)) as typeof result;
-
-      expect(transported.answers.find((a) => a.field.id === "q_rating")?.number).toBeNull();
-    });
-
-    test("NEGATIVE CONTRACT: a zero coerced from an empty answer is indistinguishable from a real zero", () => {
-      // Why `0` is a defect and not merely an odd choice: the coerced value is byte-identical to the value a
-      // respondent who genuinely answered zero produces, so no consumer can tell the two apart, and the
-      // payload is perfectly valid while being wrong. That is precisely the trap the slider's contract avoids
-      // by omitting the answer instead of coercing it.
-      const coercedFromEmpty = transformWithData({ q_opinionscale: [] });
-      const genuineZero = transformWithData({ q_opinionscale: 0 });
-
-      expect(coercedFromEmpty.answers.find((a) => a.field.id === "q_opinionscale")).toEqual(
-        genuineZero.answers.find((a) => a.field.id === "q_opinionscale")
-      );
-      // And both pass validation, so nothing downstream can catch it either.
-      expect(() => ZTypeformCompatiblePayload.parse(coercedFromEmpty)).not.toThrow();
-    });
-
-    test("should keep coercing legacy numeric strings for the shared number types", () => {
-      const result = transformWithData({ q_rating: "5", q_nps: "10", q_opinionscale: "7" });
-      expect(result.answers.find((a) => a.field.id === "q_rating")?.number).toBe(5);
-      expect(result.answers.find((a) => a.field.id === "q_nps")?.number).toBe(10);
-      expect(result.answers.find((a) => a.field.id === "q_opinionscale")?.number).toBe(7);
-      // No answer is lost when the values are numeric strings rather than numbers
-      expect(result.answers).toHaveLength(17);
-    });
-
-    test("should leave a stored number untouched for every legacy number type", () => {
-      const result = transformWithData({ q_rating: 4, q_nps: 9, q_opinionscale: 8 });
-      expect(result.answers.find((a) => a.field.id === "q_rating")?.number).toBe(4);
-      expect(result.answers.find((a) => a.field.id === "q_nps")?.number).toBe(9);
-      expect(result.answers.find((a) => a.field.id === "q_opinionscale")?.number).toBe(8);
-      expect(() => ZTypeformCompatiblePayload.parse(result)).not.toThrow();
-    });
-  });
-
-  // =========================================================================
-  // 10. Numeric Answer Integrity Tests
-  // =========================================================================
-
-  /**
-   * Every element type that publishes a `number` answer shares one branch of the transformer, but the two
-   * sides of that branch behave differently on purpose, and both sides are asserted here.
-   *
-   * The slider is strict. Its answer contract is exactly one number and the shared evaluator rejects every
-   * other shape at ingress, so anything else in its slot is corruption rather than an answer. Coercing it
-   * would be wrong in both directions: `Number("")` and `Number([])` are `0`, which for a slider whose range
-   * starts at 0 is indistinguishable from a real selection, while `Number({})` is `NaN`, which has no JSON
-   * representation and is rejected outright by ZTypeformCompatiblePayload. The slider therefore omits the
-   * answer, which is already how an unanswered question is reported.
-   *
-   * Rating, nps and opinionScale are not strict, and that is the known defect described on section 9 rather
-   * than an intended contract. They coerced these shapes with `Number()` before the slider existed and still
-   * do, because narrowing them would change established webhook output for question types this feature does not
-   * touch. Their coercion is therefore recorded below - never presented as correct - and each group is followed
-   * by the negative contract that states why the recorded output is unacceptable: the NaN cases are rejected by
-   * `ZTypeformCompatiblePayload`, and an infinity is delivered as `null`.
+   * What rating, nps and opinionScale publish is deliberately not touched, and deliberately not restated
+   * here: this feature adds a branch for one new element type rather than changing the behaviour of three
+   * existing ones.
    *
    * These suites use dedicated single-element fixtures, so every count asserted against the comprehensive
    * mockSurvey above stays exact.
@@ -1334,14 +1203,11 @@ describe("transformToTypeformPayload", () => {
       });
     });
 
-    // These three behaviours are genuinely shared: a stored number publishes unchanged, and an absent or
-    // explicitly null value returns before the number branch is ever reached.
-    describe.each([
-      ["slider", TSurveyElementTypeEnum.Slider],
-      ["rating", TSurveyElementTypeEnum.Rating],
-      ["nps", TSurveyElementTypeEnum.NPS],
-      ["opinionScale", TSurveyElementTypeEnum.OpinionScale],
-    ])("%s", (_typeLabel, elementType) => {
+    // The other side of the same branch: a stored number publishes unchanged, and an absent or explicitly
+    // null value returns before the number branch is ever reached.
+    describe("slider values that do publish", () => {
+      const elementType = TSurveyElementTypeEnum.Slider;
+
       test.each([
         ["an in-range integer", 50],
         ["zero", 0],
@@ -1374,70 +1240,6 @@ describe("transformToTypeformPayload", () => {
       });
     });
 
-    // The counterpart to the slider's omission suite above: the same shapes, recorded as they behave today for
-    // the three element types that predate the slider. This is characterization of a known defect rather than a
-    // correctness contract - see the full reasoning on section 9 - and each group is followed by the negative
-    // contract that states what makes the recorded output unacceptable.
-    describe.each([
-      ["rating", TSurveyElementTypeEnum.Rating],
-      ["nps", TSurveyElementTypeEnum.NPS],
-      ["opinionScale", TSurveyElementTypeEnum.OpinionScale],
-    ])("%s legacy coercion (known defect)", (_typeLabel, elementType) => {
-      test.each([
-        ["an empty string", "", 0],
-        ["a whitespace-only string", "   ", 0],
-        ["an empty array", [], 0],
-        ["a single-element array", ["50"], 50],
-        ["a boolean", true, 1],
-        ["positive Infinity", Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
-        ["negative Infinity", Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY],
-      ])("should still coerce %s through Number()", (_label, value, expected) => {
-        const result = transformNumeric(elementType, value);
-        const answer = result.answers.find((a) => a.field.id === "q_numeric");
-
-        expect(answer).toBeDefined();
-        expect(answer?.number).toBe(expected);
-      });
-
-      // `Number()` yields NaN for each of these. Recorded unchanged because narrowing the shared branch is out
-      // of scope here, and paired with the negative contract immediately below.
-      test.each([
-        ["an empty record", {}],
-        ["a populated record", { value: 50 }],
-        ["a non-numeric string", "abc"],
-        ["a partially numeric string", "50junk"],
-        ["NaN", Number.NaN],
-      ])("should still publish %s as NaN", (_label, value) => {
-        const result = transformNumeric(elementType, value);
-        const answer = result.answers.find((a) => a.field.id === "q_numeric");
-
-        expect(answer).toBeDefined();
-        expect(answer?.number).toBeNaN();
-      });
-
-      test.each([
-        ["an empty record", {}],
-        ["a non-numeric string", "abc"],
-        ["a partially numeric string", "50junk"],
-      ])("NEGATIVE CONTRACT: the payload %s produces is rejected by the webhook schema", (_label, value) => {
-        // The remediation target for this element type. The transformer publishes an answer the payload
-        // contract refuses, so the delivery is not merely odd - it is invalid. Omitting the answer, exactly
-        // as the slider does, is what makes these pass with the characterization above updated to match.
-        const result = transformNumeric(elementType, value);
-
-        expect(() => ZTypeformCompatiblePayload.parse(result)).toThrow();
-      });
-
-      test("NEGATIVE CONTRACT: an infinity is delivered as null, which reads as an absent answer", () => {
-        // The schema admits an infinity, so this one is not caught there: it is lost in serialisation instead.
-        const result = transformNumeric(elementType, Number.NEGATIVE_INFINITY);
-        const transported = JSON.parse(JSON.stringify(result)) as typeof result;
-
-        expect(() => ZTypeformCompatiblePayload.parse(result)).not.toThrow();
-        expect(transported.answers.find((a) => a.field.id === "q_numeric")?.number).toBeNull();
-      });
-    });
-
     test("should keep the payload schema-valid when a slider answer is NaN", () => {
       // The slider is deliberately excluded from computeScore, so once the answer is omitted nothing else in
       // the payload carries the NaN forward - which is what previously made the payload unpublishable.
@@ -1446,28 +1248,6 @@ describe("transformToTypeformPayload", () => {
       expect(result.answers).toHaveLength(0);
       expect(result.calculated.score).toBe(0);
       expect(() => ZTypeformCompatiblePayload.parse(result)).not.toThrow();
-    });
-
-    // The three element types that predate the slider have always had a stored numeric string parsed for
-    // them, and `computeScore` still does the same, so that tolerance is preserved rather than narrowed.
-    describe.each([
-      ["rating", TSurveyElementTypeEnum.Rating],
-      ["nps", TSurveyElementTypeEnum.NPS],
-      ["opinionScale", TSurveyElementTypeEnum.OpinionScale],
-    ])("%s legacy numeric-string tolerance", (_typeLabel, elementType) => {
-      test.each([
-        ["a numeric string", "5", 5],
-        ["a padded numeric string", "  7  ", 7],
-        ["a zero string", "0", 0],
-        ["a decimal string", "2.5", 2.5],
-      ])("should still publish %s as a number", (_label, value, expected) => {
-        const result = transformNumeric(elementType, value);
-        const answer = result.answers.find((a) => a.field.id === "q_numeric");
-
-        expect(answer).toBeDefined();
-        expect(answer?.number).toBe(expected);
-        expect(typeof answer?.number).toBe("number");
-      });
     });
 
     // The slider's answer contract is exactly one number and the shared evaluator rejects every other shape

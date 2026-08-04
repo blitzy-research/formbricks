@@ -1,10 +1,5 @@
 import type { TFunction } from "i18next";
 import type { TResponseData, TResponseDataValue } from "@formbricks/types/responses";
-// Imported from `constants` rather than through the `elements` re-export on purpose: `elements` evaluates
-// every Zod schema in the survey type system at module load, which would put the whole of Zod into the
-// respondent bundle. `constants` is the deliberately Zod-free half of the same source of truth.
-import type { TSurveySliderConfiguration } from "@formbricks/types/surveys/constants";
-import { parseSurveySliderConfiguration } from "@formbricks/types/surveys/constants";
 import type { TSurveyElement } from "@formbricks/types/surveys/elements";
 import { TSurveyElementTypeEnum } from "@formbricks/types/surveys/elements";
 import type {
@@ -162,6 +157,16 @@ const checkRequiredField = (
   return null;
 };
 
+/** A slider's numeric configuration, once it has been read and found usable. */
+interface TSliderConfiguration {
+  /** Inclusive lower bound, and the origin the step grid is anchored at */
+  min: number;
+  /** Inclusive upper bound */
+  max: number;
+  /** Increment between selectable values, measured from `min` */
+  step: number;
+}
+
 /**
  * Check the response value shape for elements whose answer contract is a single number.
  *
@@ -211,24 +216,46 @@ const checkSliderValueType = (
 /**
  * Read a slider's numeric configuration, or `null` when it cannot be trusted.
  *
- * The verdict is delegated to `parseSurveySliderConfiguration`, the same function the element schema refines
- * with, so a configuration the editor accepts is exactly a configuration whose answers can be validated here.
- * Sharing it is what keeps the two from drifting: a bound the schema rejects is never treated as trustworthy
- * on the way in, and a bound the schema admits is never left unanswerable on the way out.
+ * This is a DEFENSIVE READ, not a second contract. It enforces exactly what `ZSurveySliderElement` enforces
+ * - `min < max`, `step > 0`, and a step no wider than the range - and nothing more, so a configuration the
+ * editor accepts is exactly a configuration whose answers can be validated here.
  *
- * A survey saved from the editor's draft autosave path reaches persistence without passing that schema, so at
- * runtime a slider can arrive with `range` or `step` absent, non-numeric or contradictory even though the
- * compiled type declares them present. Routing every read through this function keeps the rule injector free
- * of unguarded dereferences - an absent `range` would otherwise throw a TypeError and surface as a generic
- * 500 - and gives the caller a single place to decide to fail closed.
+ * It has to read defensively because a survey saved from the editor's draft autosave path reaches persistence
+ * without passing that schema, so at runtime a slider can arrive with `range` or `step` absent or non-numeric
+ * even though the compiled type declares them present. Routing every read through this function keeps the
+ * rule injector free of unguarded dereferences - an absent `range` would otherwise throw a TypeError and
+ * surface as a generic 500 - and gives the caller a single place to decide to fail closed. Requiring finite
+ * numbers is part of that defence rather than an extra restriction on authors: the three rules below are
+ * derived from these figures, and an infinite bound would place the grid nowhere.
  */
-const readSliderConfig = (element: TSurveyElement): TSurveySliderConfiguration | null => {
+const readSliderConfig = (element: TSurveyElement): TSliderConfiguration | null => {
   if (element.type !== TSurveyElementTypeEnum.Slider) {
     return null;
   }
 
-  const result = parseSurveySliderConfiguration(element);
-  return result.valid ? result.configuration : null;
+  const { range, step } = element as { range?: unknown; step?: unknown };
+  const bounds = (typeof range === "object" && range !== null ? range : {}) as {
+    min?: unknown;
+    max?: unknown;
+  };
+
+  if (
+    typeof bounds.min !== "number" ||
+    typeof bounds.max !== "number" ||
+    typeof step !== "number" ||
+    !Number.isFinite(bounds.min) ||
+    !Number.isFinite(bounds.max) ||
+    !Number.isFinite(step)
+  ) {
+    return null;
+  }
+
+  const { min, max } = bounds as { min: number; max: number };
+  if (min >= max || step <= 0 || step > max - min) {
+    return null;
+  }
+
+  return { min, max, step };
 };
 
 /**
