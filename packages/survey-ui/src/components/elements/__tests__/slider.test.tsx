@@ -171,10 +171,19 @@ describe("Slider", () => {
     expect(getThumb()).toHaveAttribute("aria-label", "How satisfied are you?");
   });
 
-  test("advertises the required state on the control", () => {
+  test("advertises the required state on the widget that carries the slider role", () => {
     const { container } = render(<Slider {...defaultProps} required />);
 
-    expect(getSlot(container, "slider")).toHaveAttribute("aria-required", "true");
+    // The handle is where the role lives, so it is the only element on which assistive technology reads the
+    // state; the primitive's root renders a roleless node that would ignore it.
+    expect(getThumb()).toHaveAttribute("aria-required", "true");
+    expect(getSlot(container, "slider")).not.toHaveAttribute("aria-required");
+  });
+
+  test("leaves the required state off an optional control", () => {
+    render(<Slider {...defaultProps} />);
+
+    expect(getThumb()).toHaveAttribute("aria-required", "false");
   });
 
   // -------------------------------------------------------------------------

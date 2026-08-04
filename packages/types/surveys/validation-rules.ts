@@ -349,6 +349,12 @@ export type TValidationRulesForContactInfo = TValidationRulesForElementType<type
  * - `valueType` - the submitted value is not of the type this element's answer contract admits.
  * - `elementConfiguration` - the element's own definition is incomplete or contradictory, so no answer to it
  *   can be validated; the answer is refused rather than accepted unchecked.
+ *
+ * A required element left unanswered is structural in the same sense, and is deliberately NOT listed here.
+ * Its error is raised for every element type, and it is identified by its own `ruleId: "required"`, which is
+ * what a consumer reads to recognize it; recategorizing its `ruleType` would change the error metadata every
+ * existing element type already emits, for a verdict that is already unambiguous. New categories are
+ * therefore added here only for verdicts that had no identity of their own beforehand.
  */
 export const VALIDATION_STRUCTURAL_ERROR_TYPES = ["valueType", "elementConfiguration"] as const;
 

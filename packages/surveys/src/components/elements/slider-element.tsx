@@ -18,8 +18,68 @@ interface SliderElementProps {
   errorMessage?: string;
 }
 
+/** Bounds and grid an element's own configuration resolves to, once it has been found usable. */
+interface TSliderRenderConfig {
+  min: number;
+  max: number;
+  step: number;
+}
+
+/**
+ * Bounds and grid the control is given when the element's own cannot be trusted.
+ *
+ * These are the figures the editor's own preset starts an author from, so a slider still being configured
+ * renders the way a new one does rather than as a broken control.
+ */
+const FALLBACK_CONFIG: TSliderRenderConfig = { min: 0, max: 100, step: 1 };
+
+/**
+ * The element's bounds and grid, or the fallback ones when they cannot be trusted.
+ *
+ * This is the same defensive read the shared response evaluator (`readSliderConfig` in
+ * `@/lib/validation/evaluator`) performs before it derives a slider's validation rules, applied for the same
+ * reason: the editor's draft autosave path persists a survey without parsing
+ * `ZSurveySliderElement` - `ZSurveyDraft` accepts blocks as records of unknown - so a slider can reach the
+ * renderer with `range` or `step` absent or non-numeric even though the compiled type declares them present,
+ * and the editor's own preview renders exactly those drafts. Reading them unguarded would raise a TypeError
+ * and blank the survey; the shared evaluator already answers such an element with a configuration error,
+ * which reaches the respondent through `errorMessage` the moment an answer is submitted, so the renderer's
+ * only job is to stay standing until it does.
+ *
+ * The trust test mirrors the evaluator's exactly - finite numbers, `min < max`, a positive step no wider than
+ * the range - so the two layers agree on which configurations are usable.
+ */
+const readRenderConfig = (element: TSurveySliderElement): TSliderRenderConfig => {
+  const { range, step } = element as { range?: unknown; step?: unknown };
+  const bounds = (typeof range === "object" && range !== null ? range : {}) as {
+    min?: unknown;
+    max?: unknown;
+  };
+
+  if (
+    typeof bounds.min !== "number" ||
+    typeof bounds.max !== "number" ||
+    typeof step !== "number" ||
+    !Number.isFinite(bounds.min) ||
+    !Number.isFinite(bounds.max) ||
+    !Number.isFinite(step)
+  ) {
+    return FALLBACK_CONFIG;
+  }
+
+  const { min, max } = bounds as { min: number; max: number };
+  if (min >= max || step <= 0 || step > max - min) {
+    return FALLBACK_CONFIG;
+  }
+
+  return { min, max, step };
+};
+
 /**
  * Runtime wrapper for the slider element.
+ *
+ * The bounds and grid handed to the control are read through `readRenderConfig`, so an element whose
+ * configuration cannot be trusted renders instead of throwing; the shared evaluator refuses its answers.
  *
  * A selection is emitted as a bare number keyed by the element id. `value` is forwarded exactly as it
  * arrives, never defaulted and never emitted on mount, so an untouched slider carries no value at all - a
@@ -49,6 +109,7 @@ export function SliderElement({
   const isCurrent = element.id === currentElementId;
   const isRequired = element.required;
   const { t } = useTranslation();
+  const { min, max, step } = readRenderConfig(element);
   useTtc(element.id, ttc, setTtc, startTime, setStartTime, isCurrent);
 
   // The instant this element's unbilled segment began, held in a ref so that billing reads it
@@ -96,9 +157,9 @@ export function SliderElement({
         inputId={`${element.id}-input`}
         headline={getLocalizedValue(element.headline, languageCode)}
         description={element.subheader ? getLocalizedValue(element.subheader, languageCode) : undefined}
-        min={element.range.min}
-        max={element.range.max}
-        step={element.step}
+        min={min}
+        max={max}
+        step={step}
         value={value}
         onChange={handleChange}
         lowerLabel={element.lowerLabel ? getLocalizedValue(element.lowerLabel, languageCode) : undefined}

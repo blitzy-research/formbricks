@@ -22,7 +22,7 @@ vi.mock("@/lib/survey/utils", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Comprehensive Mock Fixtures — ALL 17 element types
+// Comprehensive Mock Fixtures — the 17 element types this fixture covers
 // ---------------------------------------------------------------------------
 
 const mockSurvey = {
@@ -331,7 +331,7 @@ describe("transformToTypeformPayload", () => {
   });
 
   // =========================================================================
-  // 2. Element Type Transformation Tests — ALL 17 types
+  // 2. Element Type Transformation Tests — the 17 types in this fixture
   // =========================================================================
 
   describe("element type transformations", () => {
@@ -535,9 +535,10 @@ describe("transformToTypeformPayload", () => {
       expect(answer.field.type).toBe("yes_no");
     });
 
-    test("should include all 17 answered elements in answers array (excluding hidden fields)", () => {
+    test("should include this fixture's 17 answered elements (excluding hidden fields)", () => {
       const result = transformToTypeformPayload(mockResponse, mockSurvey, mockResolvedResponseData);
-      // 17 element types answered, 0 hidden field IDs overlap with element IDs
+      // This fixture answers 17 of the element types and 0 hidden field IDs overlap with element IDs. The
+      // count is the fixture's own, not the enum's: the slider is covered by its own suites below.
       expect(result.answers).toHaveLength(17);
     });
   });

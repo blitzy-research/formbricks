@@ -28,6 +28,10 @@ const isEmpty = (value: TResponseDataValue): boolean => {
 
 /**
  * Create a required field error
+ *
+ * `ruleId: "required"` is what identifies this verdict; no rule produced it. The `ruleType` beside it is
+ * carried unchanged for every element type, deliberately outside the structural categories - see
+ * `VALIDATION_STRUCTURAL_ERROR_TYPES` in `@formbricks/types/surveys/validation-rules` for why.
  */
 const createRequiredError = (t: TFunction): TValidationError => {
   return {

@@ -9,7 +9,7 @@ import {
   ZSurveySliderElement,
 } from "@formbricks/types/surveys/elements";
 import type { TSurveyElement, TSurveySliderElement } from "@formbricks/types/surveys/elements";
-import { ZValidationRules } from "@formbricks/types/surveys/validation-rules";
+import { APPLICABLE_RULES, ZValidationRules } from "@formbricks/types/surveys/validation-rules";
 import type { TValidationRuleParams } from "@formbricks/types/surveys/validation-rules";
 import { validateBlockResponses, validateElementResponse } from "./evaluator";
 import { validators } from "./validators";
@@ -723,4 +723,136 @@ describe("stepMultipleOf defers a step that describes no grid to the configurati
     );
     expect(ZValidationRules.safeParse([]).success).toBe(true);
   });
+});
+
+/**
+ * Rule injection, seen from the evaluator rather than from a validator.
+ *
+ * A slider carries no author-configurable rules, so the three constraints its schema promises reach a
+ * response only because the evaluator derives them from the element itself. The criteria above reach two of
+ * the three through their own values; this suite pins the derivation: every rule is present and attributable
+ * to the element's own configuration, the grid is anchored where the element says, an author's own
+ * `validation` block cannot loosen the set, and none of it escapes to another element type.
+ */
+describe("the evaluator derives a slider's three intrinsic rules from the element", () => {
+  const SLIDER_RULE_IDS = ["__implicit_slider_min__", "__implicit_slider_max__", "__implicit_slider_step__"];
+  const SLIDER_GATE_IDS = ["sliderValueType", "sliderConfiguration"];
+
+  test("offers the author no configurable rules, so the injected set is the whole contract", () => {
+    // An empty applicability list is what makes the three rules engine-internal: they cannot be replaced,
+    // reordered or removed from the editor, which is why nothing above needs to defend against that.
+    expect(APPLICABLE_RULES[TSurveyElementTypeEnum.Slider]).toEqual([]);
+  });
+
+  test("injects the lower bound, which is the rule the acceptance values never reach", () => {
+    // -5 is a point of the step-5 grid anchored at 0, so only the lower bound can refuse it.
+    const belowMinimum = validateElementResponse(buildSliderElement(), -5, "en");
+
+    expect(belowMinimum.valid).toBe(false);
+    expect(belowMinimum.errors.map((error) => error.ruleId)).toEqual(["__implicit_slider_min__"]);
+    expect(belowMinimum.errors.map((error) => error.ruleType)).toEqual(["minValue"]);
+    expect(belowMinimum.errors[0].message).toBe("errors.min_value");
+  });
+
+  test.each([
+    ["below the minimum and off the grid", -3, ["__implicit_slider_min__", "__implicit_slider_step__"]],
+    ["above the maximum and off the grid", 107, ["__implicit_slider_max__", "__implicit_slider_step__"]],
+  ] as [string, number, string[]][])(
+    "applies every injected rule to one answer: %s",
+    (_label, value, expectedRuleIds) => {
+      // The injected rules run under AND logic, so each one that fails reports. A value that breaks two of
+      // them is what shows all three were injected, rather than only the one a single-failure value reaches.
+      const result = validateElementResponse(buildSliderElement(), value, "en");
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((error) => error.ruleId)).toEqual(expectedRuleIds);
+    }
+  );
+
+  describe("anchors the grid at the element's own minimum rather than at zero", () => {
+    // 10 to 50 in steps of 5. The `offset` the injector passes is what makes 15 a grid point and 12 not one,
+    // and it is only observable on a range that does not start at zero.
+    const buildOffsetElement = (): TSurveySliderElement =>
+      ({ ...buildSliderElement(), range: { min: 10, max: 50 } }) as TSurveySliderElement;
+
+    test.each([
+      ["the minimum itself", 10],
+      ["a grid point inside the range", 15],
+      ["the maximum, which the grid reaches exactly", 50],
+    ] as [string, number][])("accepts %s", (_label, value) => {
+      const result = validateElementResponse(buildOffsetElement(), value, "en");
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    test.each([
+      ["an in-range value between two grid points", 12, "__implicit_slider_step__", "stepMultipleOf"],
+      ["a value below the offset minimum", 5, "__implicit_slider_min__", "minValue"],
+      ["a value above the maximum", 55, "__implicit_slider_max__", "maxValue"],
+    ] as [string, number, string, string][])("rejects %s", (_label, value, ruleId, ruleType) => {
+      const result = validateElementResponse(buildOffsetElement(), value, "en");
+
+      expect(result.valid).toBe(false);
+      // Exactly one rule answers each of these, so the rejection is attributable to that rule alone.
+      expect(result.errors.map((error) => error.ruleId)).toEqual([ruleId]);
+      expect(result.errors.map((error) => error.ruleType)).toEqual([ruleType]);
+    });
+
+    test("carries the same verdicts through the block entrypoint every response route reaches", () => {
+      const element = buildOffsetElement();
+
+      expect(validateBlockResponses([element], { [SLIDER_ELEMENT_ID]: 15 }, "en")).toEqual({});
+
+      const offGrid = validateBlockResponses([element], { [SLIDER_ELEMENT_ID]: 12 }, "en");
+
+      expect(Object.keys(offGrid)).toEqual([SLIDER_ELEMENT_ID]);
+      expect(offGrid[SLIDER_ELEMENT_ID].map((error) => error.ruleId)).toEqual(["__implicit_slider_step__"]);
+      expect(offGrid[SLIDER_ELEMENT_ID][0].message).toBe("errors.step_multiple_of");
+    });
+  });
+
+  test("keeps the intrinsic rules in force when the element carries an author validation block", () => {
+    // A slider has no author-configurable rules, so a `validation` block reaching one - hand-posted, or left
+    // behind by an element that was retyped - is discarded rather than merged. It can therefore neither
+    // widen a bound nor turn the set into an "or" that one passing rule would satisfy.
+    const element = {
+      ...buildSliderElement(),
+      validation: {
+        rules: [{ id: "author-max", type: "maxValue", params: { max: 1000 } }],
+        logic: "or",
+      },
+    } as unknown as TSurveySliderElement;
+
+    const result = validateElementResponse(element, 105, "en");
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.map((error) => error.ruleId)).toEqual(["__implicit_slider_max__"]);
+    expect(result.errors.some((error) => error.ruleId === "author-max")).toBe(false);
+  });
+
+  test.each(Object.values(TSurveyElementTypeEnum).filter((type) => type !== TSurveyElementTypeEnum.Slider))(
+    "leaves %s alone: neither the injected rules nor the structural gates reach it",
+    (type) => {
+      // Every helper the slider added type-guards on the element type before reading anything, and this is
+      // what pins that guard for each of the other seventeen types. The value is a plain number off the
+      // slider's own grid - exactly what would be refused if one of them leaked - and the element carries no
+      // range, no step and no rules of its own, so a leak would also have to read fields that are not there.
+      const element = {
+        id: `${type}-element`,
+        type,
+        headline: { default: "Untouched by the slider" },
+        required: false,
+      } as unknown as TSurveyElement;
+
+      // The same value is refused for a slider, so a pass below can only mean the guard held rather than
+      // that the probe was harmless.
+      expect(validateElementResponse(buildSliderElement(), 7, "en").valid).toBe(false);
+
+      const result = validateElementResponse(element, 7, "en");
+
+      expect(result.errors.filter((error) => SLIDER_RULE_IDS.includes(error.ruleId))).toEqual([]);
+      expect(result.errors.filter((error) => SLIDER_GATE_IDS.includes(error.ruleId))).toEqual([]);
+    }
+  );
 });

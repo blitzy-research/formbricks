@@ -120,7 +120,8 @@ interface SliderProps {
  *
  * Accessibility. The primitive supplies `role="slider"`, the live value semantics and the full key contract -
  * arrow keys step by one increment, Page keys jump, Home and End move to the bounds - and the handle is
- * named from the headline. The value readout is an `output` bound to the control.
+ * named from the headline and carries the required state, the role being on the handle rather than on the
+ * root. The value readout is an `output` bound to the control.
  *
  * Appearance. Every part is token-driven - colour, radius and font come from the existing design tokens
  * rather than from hard-coded values - and each carries a stable slot attribute a consumer can target:
@@ -297,7 +298,6 @@ function Slider({
           data-slot="slider"
           id={inputId}
           aria-label={headline}
-          aria-required={required}
           min={0}
           max={span}
           step={safeStep}
@@ -321,7 +321,14 @@ function Slider({
 
           {/* The handle carries `role="slider"`, the live value and the focus. Its `aria-value*` set is
               supplied here rather than left to the primitive, which would publish the offset it is driven
-              with instead of the number the respondent is choosing.
+              with instead of the number the respondent is choosing. `aria-required` belongs here for the
+              same reason the role does: the primitive's root is a roleless element, where assistive
+              technology has no widget to attach the state to.
+
+              While the control is unanswered the handle publishes the minimum as its current value, because
+              the slider role requires one - the unfilled handle is the visual signal that nothing has been
+              chosen yet. Announcing that state instead would take a translated string, which this
+              presentational component takes no part in resolving.
 
               `asChild` renders the element below in its place, which is what lets the node be replaced once
               when the primitive fails to resolve its handle - see the note above. The primitive merges its
@@ -329,6 +336,7 @@ function Slider({
           <SliderPrimitive.Thumb
             data-slot="slider-thumb"
             aria-label={headline}
+            aria-required={required}
             aria-valuemin={min}
             aria-valuemax={max}
             aria-valuenow={displayedValue}
