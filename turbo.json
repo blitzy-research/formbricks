@@ -129,8 +129,7 @@
         "@formbricks/logger#build",
         "@formbricks/database#build",
         "@formbricks/storage#build",
-        "@formbricks/cache#build",
-        "@formbricks/surveys#build"
+        "@formbricks/cache#build"
       ]
     },
     "@formbricks/web#test:coverage": {
@@ -138,8 +137,7 @@
         "@formbricks/logger#build",
         "@formbricks/database#build",
         "@formbricks/storage#build",
-        "@formbricks/cache#build",
-        "@formbricks/surveys#build"
+        "@formbricks/cache#build"
       ]
     },
     "build": {

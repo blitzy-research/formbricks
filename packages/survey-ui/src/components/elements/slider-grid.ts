@@ -27,11 +27,12 @@
  * Highest tick index the control will address.
  *
  * Beyond this, whole numbers are no longer exactly representable as doubles, so neither the primitive's
- * integer snapping nor the conversion below would be exact. A configuration whose grid is finer than this
- * bound - `0 .. 1` in steps of `1e-30` describes 1e30 points - is reachable only in part, which is the
- * correct trade: every value the control can then emit is still exactly a point of the grid, and a value
- * that is merely unreachable is a presentation limit, whereas a value off the grid would be persisted and
- * then rejected as invalid.
+ * integer snapping nor the conversion below would be exact. Together with the magnitude bound below, this is
+ * what makes a grid the element schema does not admit - `0 .. 1` in steps of `1e-30` describes 1e30 points -
+ * reachable only in part rather than incorrectly: every value the control can then emit is still exactly a
+ * point of the grid, and a value that is merely unreachable is a presentation limit, whereas a value off the
+ * grid would be persisted and then rejected as invalid. Only a draft an author is still typing can reach
+ * that state; a published configuration is bounded by the schema to a grid this offers in full.
  */
 const MAX_TICK_INDEX = Number.MAX_SAFE_INTEGER;
 
@@ -51,16 +52,17 @@ const GRID_ALLOWANCE_FRACTION = 1e-6;
 const RECONSTRUCTION_ULPS = 4;
 
 /**
- * The largest magnitude at which a value of this grid can still be told apart from a neighbouring point.
+ * Units of `10 ** -scale` a grid point may reach while its restated decimal form still survives a double
+ * round trip: `magnitude * 2 ** -51 < 0.5 * 10 ** -scale`, i.e. `magnitude * 10 ** scale < 2 ** 50`.
  *
- * Doubles are spaced `magnitude * Number.EPSILON` apart, so once that spacing outgrows the allowance above,
- * no double is close enough to a grid point to be accepted as one - the grid is finer than the number type
- * can express there, and that is a property of arithmetic rather than of this implementation. It only ever
- * binds a grid whose points cannot be restated exactly as decimals; where they can, the restatement lands on
- * the point itself and no allowance is needed.
+ * Mirrored from `parseSurveySliderConfiguration` in `@formbricks/types`, which rejects any configuration
+ * whose widest bound passes the same limit. This package deliberately does not depend on that one - its
+ * components take primitive props and know nothing about survey schemas - so the bound is restated here, and
+ * the two must be changed together. Keeping them equal is what makes the control's grid and the schema's
+ * grid the same set: a configuration the schema accepts is offered in full here, and a draft configuration
+ * the schema rejects is still only ever offered as far as it can be answered.
  */
-const highestRepresentableMagnitude = (step: number): number =>
-  (step * GRID_ALLOWANCE_FRACTION) / (Number.EPSILON * RECONSTRUCTION_ULPS);
+const MAX_SCALED_MAGNITUDE = 2 ** 50;
 
 /**
  * Decimal places a number needs, including the magnitudes JavaScript prints in exponential notation.
@@ -76,6 +78,33 @@ export const decimalPlaces = (input: number): number => {
   if (!exponent) return fraction.length;
 
   return Math.max(fraction.length - Number(exponent), 0);
+};
+
+/**
+ * The largest magnitude at which a value of this grid can still be told apart from a neighbouring point.
+ *
+ * Two regimes, because two different things bound the arithmetic:
+ * - While the grid's points have a decimal form `toFixed` can express, `tickToValue` restates the
+ *   reconstruction onto that form, and what limits it is how many units of that scale a double can count.
+ *   Above that limit the restatement no longer recovers the point: at `1e15` on a `0.2` grid, adjacent
+ *   doubles are `0.125` apart, so `min + tick * step` rounds to a neighbour and is restated as a value half
+ *   a step off the grid - which the control would emit and the server would then reject.
+ * - Beyond that scale there is no restatement at all, so the raw reconstruction is what is emitted, and it
+ *   may only drift as far as the shared response rule forgives: doubles are spaced
+ *   `magnitude * Number.EPSILON` apart, so once a few of those outgrow a millionth of the step, no double
+ *   there is close enough to a grid point to be accepted as one.
+ *
+ * The two are deliberately not combined: the second says nothing useful about a grid that is restated
+ * exactly, and applying it there would cut `0 .. 1e15` in steps of `1` down to its first billion points
+ * even though every one of them is an integer a double holds exactly.
+ */
+const highestRepresentableMagnitude = (min: number, step: number): number => {
+  const scale = Math.max(decimalPlaces(min), decimalPlaces(step));
+  if (scale <= MAX_DECIMAL_SCALE) {
+    return MAX_SCALED_MAGNITUDE / 10 ** scale;
+  }
+
+  return (step * GRID_ALLOWANCE_FRACTION) / (Number.EPSILON * RECONSTRUCTION_ULPS);
 };
 
 /**
@@ -103,21 +132,28 @@ export const tickToValue = (tick: number, min: number, step: number): number => 
 };
 
 /**
- * How many steps of this grid a double can still place exactly, or `MAX_TICK_INDEX` when precision is not
- * what limits it.
+ * How many steps of this grid a double can still place exactly.
  *
- * A grid whose points have an exact decimal form is placed exactly at any magnitude, because the
- * reconstruction is restated onto that form. Where it does not - a step finer than `MAX_DECIMAL_SCALE`
- * places - the reconstruction carries the rounding error of a multiply-add, and the grid can only be offered
- * as far as that error stays inside what the shared response rule forgives. The alternative would be a
- * control that lets a respondent pick a value the server then rejects.
+ * Precision limits every grid eventually, not only the ones too fine to restate: whether the value that is
+ * emitted is the restated decimal or the raw reconstruction, past some magnitude it stops being a point of
+ * the grid it came from. `highestRepresentableMagnitude` says where that is for each of those two regimes,
+ * and the grid is offered only as far as it holds. Offering more would be a control that lets a respondent
+ * pick a value the server then rejects - which is exactly the mismatch this module exists to prevent.
+ *
+ * The configuration the element schema accepts is bounded by the same limit, so for any published slider this
+ * returns more ticks than the range itself contains and the whole grid is offered. It binds only a draft an
+ * author is still typing, which reaches the runtime without passing that schema.
  */
 const ticksWithinRepresentableMagnitude = (min: number, step: number): number => {
-  if (Math.max(decimalPlaces(min), decimalPlaces(step)) <= MAX_DECIMAL_SCALE) return MAX_TICK_INDEX;
+  const bound = highestRepresentableMagnitude(min, step);
 
-  // `|min + tick * step| <= |min| + tick * step`, so bounding the right-hand side bounds the magnitude for
-  // both directions of the grid.
-  const headroom = highestRepresentableMagnitude(step) - Math.abs(min);
+  // The origin is a point of every grid, so a grid anchored past the bound has none that can be placed.
+  if (!(Math.abs(min) <= bound)) return 0;
+
+  // Values climb from `min` towards `+bound`, so the headroom is measured from the *signed* origin rather
+  // than from its magnitude: a grid anchored at `-1e15` has the whole of `-bound .. +bound` ahead of it, and
+  // subtracting `|min|` instead would cut such a grid off less than a tenth of the way along its own range.
+  const headroom = bound - min;
   if (!(headroom > 0)) return 0;
 
   return Math.min(Math.floor(headroom / step), MAX_TICK_INDEX);

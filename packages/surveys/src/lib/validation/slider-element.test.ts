@@ -8,7 +8,7 @@ import {
   ZSurveyElements,
   ZSurveySliderElement,
 } from "@formbricks/types/surveys/elements";
-import type { TSurveySliderElement } from "@formbricks/types/surveys/elements";
+import type { TSurveyElement, TSurveySliderElement } from "@formbricks/types/surveys/elements";
 import { ZValidationRules } from "@formbricks/types/surveys/validation-rules";
 import type { TValidationRuleParams } from "@formbricks/types/surveys/validation-rules";
 import { validateBlockResponses, validateElementResponse } from "./evaluator";
@@ -99,14 +99,13 @@ describe("slider element acceptance criteria", () => {
   });
 
   /**
-   * The engine half of acceptance criterion (b).
+   * Acceptance criterion (b).
    *
    * What is provable here is that the value is accepted and that its numeric type satisfies the response-data
-   * contract - this package has no database and no ingress route, so storage is out of its reach. The write and
-   * read-back half is proven at the real boundary by
-   * `apps/web/app/api/v1/client/[environmentId]/responses/lib/slider-response-persistence.test.ts`, which
-   * drives `ZResponseInput`, `validateResponseData` and `createResponseWithQuotaEvaluation` unmocked and reads
-   * the row back through `ZResponse`.
+   * contract every response route parses its payload with - this package has no database, so the write itself
+   * is out of its reach. Nothing about storage needs to be added for it: `ZResponseDataValue` already admits
+   * `z.number()`, and the persisted column is JSON typed by exactly the contract asserted below, so a value
+   * that survives it is stored as the number it is.
    */
   test("(b) a valid in-range, on-grid value of 50 validates and keeps its numeric type", () => {
     const element = buildSliderElement();
@@ -170,11 +169,10 @@ describe("slider element acceptance criteria", () => {
     expect(emptyValue.errors[0].message).toBe("errors.please_fill_out_this_field");
 
     // The element id is submitted as a KEY carrying an empty value, which is the shape a respondent's client
-    // sends for a slider that was rendered and left untouched. The engine does not depend on the key being
-    // there - the test immediately below proves an absent key is rejected identically, because
-    // `validateBlockResponses` iterates the ELEMENTS it is handed rather than the keys it receives. The key is
-    // present here because the server wrapper that fronts the engine narrows its element list to the
-    // submitted keys before delegating, so this is the shape production callers actually produce.
+    // sends for a slider that was rendered and left untouched, and the shape the feature's acceptance
+    // criterion is stated in. The engine does not depend on the key being there - the test immediately below
+    // proves an absent key is rejected identically, because `validateBlockResponses` iterates the ELEMENTS it
+    // is handed rather than the keys it receives.
     const emptyStringMap = validateBlockResponses([element], { [SLIDER_ELEMENT_ID]: "" }, "en");
 
     expect(Object.keys(emptyStringMap)).toEqual([SLIDER_ELEMENT_ID]);
@@ -197,14 +195,17 @@ describe("slider element acceptance criteria", () => {
 
     // `validateBlockResponses` is element-driven: it walks the elements it is handed and reads
     // `responses[element.id]`, so a key that was never submitted arrives as `undefined` and meets exactly the
-    // same required check an empty string meets. That is a property of the shared engine, and it holds for any
-    // caller that hands the element over.
+    // same required check an empty string meets. The engine therefore refuses an unanswered required slider on
+    // whichever shape it is given, and it does so for every caller that hands it the element - the respondent
+    // runtime, which validates the whole block it rendered, as much as the server.
     //
-    // It is deliberately NOT a claim about the server routes. The wrapper they call narrows the element list to
-    // the ids present in the submitted data before delegating here, so an omitted key never reaches this
-    // function through that path and completeness is enforced elsewhere. The production acceptance contract for
-    // an unanswered required slider is therefore the present-key case in the test above, not this one; this
-    // case exists so that the engine's own behaviour is pinned independently of who calls it.
+    // Which elements a given caller hands over is that caller's question, not this engine's, and the answer is
+    // deliberately not uniform: the server-side wrapper validates the elements whose ids appear in the
+    // submitted data, which is the platform-wide contract every element type has been ingested under since
+    // "fix: always validate only responseData fields in client/management APIs" (#7292/#7296) and is asserted
+    // by that module's own suite. Pinning the engine's behaviour here keeps this property provable
+    // independently of that decision, so a future change to which elements are submitted for validation
+    // inherits a required check that already works.
     const absentKey = validateBlockResponses([element], {}, "en");
 
     expect(Object.keys(absentKey)).toEqual([SLIDER_ELEMENT_ID]);
@@ -240,9 +241,15 @@ describe("slider grid rejection holds at magnitudes where floating point stops b
   const HIGH_MAGNITUDE_ELEMENT_ID = "sliderHigh";
 
   /**
-   * A range wide enough that its values scale past `Number.MAX_SAFE_INTEGER` on a 0.2 grid. Nothing about
-   * this configuration is unusual to an author - a range and a step, both finite, the step far smaller than
-   * the span - which is precisely why the grid check has to stay exact here rather than only near zero.
+   * A range wide enough that its values scale past `Number.MAX_SAFE_INTEGER` on a 0.2 grid.
+   *
+   * A grid this fine at this magnitude is no longer answerable: the spacing between representable doubles at
+   * 1e15 is 0.125, so the control's own reconstruction of `min + n * step` rounds onto a neighbouring double
+   * and would offer values half a step off the grid it is describing. The configuration is therefore refused
+   * by the schema - see the representability cases below - and this element is built around that schema so
+   * the two layers that judge an already-persisted survey can be pinned independently: the evaluator, which
+   * must fail closed, and the grid rule itself, whose arithmetic must stay exact at this magnitude because a
+   * value posted straight to a response endpoint reaches it directly.
    */
   const buildHighMagnitudeElement = (): TSurveySliderElement =>
     ({
@@ -254,58 +261,64 @@ describe("slider grid rejection holds at magnitudes where floating point stops b
       step: 0.2,
     }) as unknown as TSurveySliderElement;
 
-  test("the high-magnitude configuration is itself schema-valid, so the grid rule is the only gate", () => {
+  test("the high-magnitude configuration is refused by the schema, so no author can publish it", () => {
     const parsed = ZSurveySliderElement.safeParse(buildHighMagnitudeElement());
 
-    expect(parsed.success).toBe(true);
-    if (!parsed.success) {
-      throw parsed.error;
+    expect(parsed.success).toBe(false);
+    if (parsed.success) {
+      throw new Error("Expected the configuration to be rejected, but it parsed successfully.");
     }
 
-    expect(parsed.data.range).toEqual({ min: 0, max: 1000000000000001 });
-    expect(parsed.data.step).toBe(0.2);
+    expect(parsed.error.issues).toHaveLength(1);
+    expect(parsed.error.issues[0].path).toEqual(["step"]);
+    expect(parsed.error.issues[0].message).toBe(
+      "The range and the step ask for more precision than a number can hold"
+    );
   });
 
   // Each value below is a whole half-step off the grid - the largest miss the grid admits, not a rounding
-  // artefact - and each is in range. Reconstructing the nearest grid point in double arithmetic returns the
-  // submitted value itself at this magnitude, measuring a drift of exactly zero and accepting it.
+  // artefact - and each is in range. Reconstructing the nearest grid point in DOUBLE arithmetic returns the
+  // submitted value itself at this magnitude, measuring a drift of exactly zero and accepting it, which is
+  // why the rule decides the grid with exact decimal arithmetic instead.
   test.each([
     ["a half-step above a grid point", 1000000000000000.5],
     ["a half-step below the next grid point", 1000000000000000.9],
-  ])("should reject %s", (_label, value) => {
-    const element = buildHighMagnitudeElement();
-
-    const result = validateElementResponse(element, value, "en");
-
-    expect(result.valid).toBe(false);
-    expect(result.errors.map((error) => error.ruleId)).toEqual(["__implicit_slider_step__"]);
-    expect(result.errors[0].ruleType).toBe("stepMultipleOf");
-    expect(result.errors[0].message).toBe("errors.step_multiple_of");
+  ])("should reject %s at the grid rule itself", (_label, value) => {
+    // The rule is exercised directly here: the evaluator no longer injects it for this element, because the
+    // configuration it would derive the grid from is one it refuses to trust.
+    expect(validators.stepMultipleOf.check(value, { step: 0.2, offset: 0 }, {} as TSurveyElement).valid).toBe(
+      false
+    );
   });
 
   test("should still accept a genuinely aligned value at the same magnitude", () => {
-    const element = buildHighMagnitudeElement();
-
-    // 1000000000000000.4 is 5000000000000002 whole steps of 0.2 above the minimum.
-    const result = validateElementResponse(element, 1000000000000000.4, "en");
-
-    expect(result.valid).toBe(true);
-    expect(result.errors).toHaveLength(0);
+    // 1000000000000000.4 is 5000000000000002 whole steps of 0.2 above the minimum, so the rule's exactness
+    // cuts both ways: it does not reject a value merely for being large.
+    expect(
+      validators.stepMultipleOf.check(1000000000000000.4, { step: 0.2, offset: 0 }, {} as TSurveyElement)
+        .valid
+    ).toBe(true);
   });
 
-  test("should reject through validateBlockResponses (the shared server path)", () => {
+  test("should fail closed through validateBlockResponses when such a survey is already persisted", () => {
+    // The draft autosave path persists an element without parsing the schema, so this configuration can
+    // still reach a live survey. Every answer submitted to it is refused - the aligned one as well as the
+    // off-grid one - because an element whose grid cannot be trusted cannot be used to accept anything.
     const element = buildHighMagnitudeElement();
 
-    const errorMap = validateBlockResponses(
-      [element],
-      { [HIGH_MAGNITUDE_ELEMENT_ID]: 1000000000000000.5 },
-      "en"
-    );
+    for (const value of [1000000000000000.5, 1000000000000000.4]) {
+      const errorMap = validateBlockResponses([element], { [HIGH_MAGNITUDE_ELEMENT_ID]: value }, "en");
 
-    expect(Object.keys(errorMap)).toEqual([HIGH_MAGNITUDE_ELEMENT_ID]);
-    expect(errorMap[HIGH_MAGNITUDE_ELEMENT_ID].map((error) => error.ruleId)).toEqual([
-      "__implicit_slider_step__",
-    ]);
+      expect(Object.keys(errorMap)).toEqual([HIGH_MAGNITUDE_ELEMENT_ID]);
+      expect(errorMap[HIGH_MAGNITUDE_ELEMENT_ID].map((error) => error.ruleId)).toEqual([
+        "sliderConfiguration",
+      ]);
+      expect(errorMap[HIGH_MAGNITUDE_ELEMENT_ID].map((error) => error.ruleType)).toEqual([
+        "elementConfiguration",
+      ]);
+    }
+
+    expect(validateElementResponse(element, 1000000000000000.5, "en").valid).toBe(false);
   });
 });
 
@@ -447,6 +460,36 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
       path: ["step"],
       message: "Step cannot be larger than the range",
     },
+    // --- Representability: a grid whose points a double cannot tell apart is not answerable -----
+    {
+      // The reviewed counterexample. Adjacent doubles at 1e21 are 131072 apart, so a 0.3 grid there has
+      // 436907 nominal points sharing two representable values, and every interaction above the midpoint
+      // would submit a value 0.1 off the grid - which the response rule rejects, tolerating only 3e-7.
+      label: "a fine grid on an origin past the safe integer range",
+      range: { min: 1e21, max: 1.0000000000000001e21 },
+      step: 0.3,
+      path: ["step"],
+      message: "The range and the step ask for more precision than a number can hold",
+    },
+    {
+      // The other direction of the same defect: 1e20 points, of which a double can index only the first
+      // 9e15, so all but a ten-thousandth of the range would be unreachable.
+      label: "a step finer than the range can express",
+      range: { min: 0, max: 1 },
+      step: 1e-20,
+      path: ["step"],
+      message: "The range and the step ask for more precision than a number can hold",
+    },
+    {
+      // Neither number is unusual on its own - a range an author could plausibly type, and a step ten times
+      // coarser than a cent - but together they ask for sixteen significant digits, one more than a double
+      // carries: the spacing between doubles at 1e15 is 0.125, over half of this step.
+      label: "a decimal grid whose points scale past a double",
+      range: { min: 0, max: 1e15 },
+      step: 0.2,
+      path: ["step"],
+      message: "The range and the step ask for more precision than a number can hold",
+    },
     // --- The numeric domain: bounds and step must be finite, and so must the span they describe --
     {
       // Each bad bound is named individually, so the message points at the field the author typed rather
@@ -584,6 +627,15 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
       { label: "a span that overflows", range: { min: -1e308, max: 1e308 }, step: 5 },
       { label: "an infinite step", range: { min: 0, max: 100 }, step: Number.POSITIVE_INFINITY },
       { label: "a step wider than the span", range: { min: 0, max: 10 }, step: 20 },
+      // The representability cases: each describes a grid whose points a double cannot tell apart, so the
+      // control could only offer values this very evaluator would then reject. See the dedicated suite below.
+      {
+        label: "a fine grid on an origin past the safe integer range",
+        range: { min: 1e21, max: 1.0000000000000001e21 },
+        step: 0.3,
+      },
+      { label: "a step finer than the range can express", range: { min: 0, max: 1 }, step: 1e-20 },
+      { label: "a decimal grid whose points scale past a double", range: { min: 0, max: 1e15 }, step: 0.2 },
     ];
 
     test.each(unrepresentableConfigs)(
@@ -602,7 +654,10 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
 
     test.each([
       { label: "the reference grid", range: { min: 0, max: 100 }, step: 5, value: 50 },
-      { label: "a grid at the representable extremes", range: { min: -1e308, max: 1e308 / 2 }, step: 5e307 },
+      // The widest grid the representability limit admits on a whole-number scale: every one of its
+      // 1e15 points is an integer a double holds exactly, so nothing about the magnitude alone disqualifies
+      // a configuration - it is the precision the range and the step ask for TOGETHER that does.
+      { label: "a grid at the representable extremes", range: { min: 0, max: 1e15 }, step: 1, value: 1e15 },
       { label: "a grid offset from zero", range: { min: 10, max: 50 }, step: 5, value: 15 },
     ] as { label: string; range: { min: number; max: number }; step: number; value?: number }[])(
       "accepts $label at the schema and checks answers against it at the evaluator",

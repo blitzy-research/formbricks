@@ -6,8 +6,23 @@ import { decimalPlaces, getTickCount, tickToValue, valueToTick } from "../slider
  *
  * The component specs beside this file prove what the control reports for an interaction; these prove the
  * property those reports depend on, at magnitudes and precisions a rendered interaction cannot conveniently
- * reach: every tick addresses a value that is exactly a point of `min + n * step`, and no configuration the
- * element schema admits produces a value outside the range or outside the double range.
+ * reach: **every tick the control offers addresses a value the shared response rule accepts as a point of
+ * `min + n * step`, and that value is inside the configured range and inside the double range.**
+ *
+ * That property is what makes the control and the server agree, and it holds for every configuration - not
+ * only for the ones an author can publish. The two are kept in step from opposite ends:
+ *
+ * - `parseSurveySliderConfiguration` in `@formbricks/types` refuses a configuration whose grid asks for more
+ *   precision than a double carries, so no published slider can describe one.
+ * - `getTickCount` here applies the same limit to the ticks it offers, so a DRAFT configuration - which
+ *   reaches the runtime without passing that schema - is offered only as far as it can be answered. Ticks it
+ *   withholds are values a respondent cannot reach; ticks it offered wrongly would be values the server
+ *   rejects after the fact, which is the failure this bound exists to prevent.
+ *
+ * Where the grid's points have a decimal form `toFixed` can restate, "accepts" means exactly on the grid,
+ * with no tolerance at all - the assertions below are written that way deliberately. Only beyond that scale,
+ * where no restatement exists, does the reconstruction rely on the fraction of a step the response rule
+ * forgives, and those cases say so explicitly.
  */
 
 /**
@@ -119,9 +134,10 @@ describe("getTickCount", () => {
 
   test("bounds a grid whose points a double cannot tell apart", () => {
     // 1e30 points. Past a certain magnitude the spacing between doubles outgrows this grid's step, so a
-    // value there cannot be shown to be a point of it and the shared response rule would reject it. The grid
-    // is offered as far as it is representable - which is still over a billion points - rather than in full
-    // and approximately.
+    // value there cannot be shown to be a point of it and the shared response rule would reject it. The
+    // element schema refuses such a configuration outright, so only a draft reaches this path; the grid is
+    // then offered as far as it is representable - which is still over a billion points - rather than in
+    // full and approximately.
     const tickCount = getTickCount(0, 1, 1e-30);
 
     expect(tickCount).toBeGreaterThan(1_000_000_000);
@@ -141,6 +157,88 @@ describe("getTickCount", () => {
   test("stops a grid one step short of leaving the double range", () => {
     // The second point of this grid is not a finite number.
     expect(getTickCount(1.7e308, 1.79e308, 1e307)).toBe(0);
+  });
+
+  test("offers the whole of the widest grid the element schema admits", () => {
+    // Every point of this grid is an integer a double holds exactly, 1e15 of them, and the control offers all
+    // of them: the bound is about the precision the range and the step ask for together, never about
+    // magnitude alone. Getting this wrong in the other direction - withholding ticks of a published
+    // configuration - would leave part of a slider's own range unreachable.
+    expect(getTickCount(0, 1e15, 1)).toBe(1e15);
+    expect(tickToValue(1e15, 0, 1)).toBe(1e15);
+  });
+
+  test("measures its headroom from the signed origin, so a grid below zero is offered in full", () => {
+    // A grid anchored at -1e12 climbs through zero, so the magnitude its values reach is bounded by its
+    // maximum, not by |min| + span. Measuring the headroom from |min| instead would cut this grid off at
+    // roughly a tenth of its own range.
+    const tickCount = getTickCount(-1e12, 1e12, 0.5);
+
+    expect(tickCount).toBe(4e12);
+    expect(tickToValue(tickCount, -1e12, 0.5)).toBe(1e12);
+  });
+});
+
+/**
+ * The configurations the element schema refuses, offered here anyway.
+ *
+ * A draft an author is still typing is persisted without passing the element schema, so the runtime can be
+ * handed a grid the schema would have rejected. The control's contract in that state is not "render nothing"
+ * but "never offer a value the server will reject": these are the two cross-layer counterexamples that
+ * motivated the shared representability limit, plus the mid-magnitude case that shows the same defect with
+ * numbers an author could plausibly have typed.
+ */
+describe("grids a double cannot express are offered only as far as they can be answered", () => {
+  test.each([
+    // A 0.3 grid on a 1e21 origin: adjacent doubles there are 131072 apart, so 436907 nominal points share
+    // two representable values. Only the origin itself is a point of the grid, and only the origin is offered.
+    ["a fine grid on an origin past the safe integer range", 1e21, 1.0000000000000001e21, 0.3],
+    // 1e20 nominal points, of which a double can index 9e15. The prefix that is offered is exact.
+    ["a step finer than the range can express", 0, 1, 1e-20],
+    // The spacing between doubles at 1e15 is 0.125, over half of this step, so the reconstruction of a high
+    // tick rounds onto a neighbour and would be restated half a step off the grid.
+    ["a decimal grid whose points scale past a double", 0, 1e15, 0.2],
+  ] as [string, number, number, number][])(
+    "addresses only points of %s, from either end",
+    (_label, min, max, step) => {
+      const tickCount = getTickCount(min, max, step);
+
+      // Both ends, the middle, and the two ticks below the last: the top is where the reconstruction carries
+      // the most error and where an unbounded grid would first go wrong.
+      const ticks = [
+        ...new Set([0, 1, 2, Math.floor(tickCount / 2), tickCount - 2, tickCount - 1, tickCount]),
+      ].filter((tick) => tick >= 0 && tick <= tickCount);
+
+      for (const tick of ticks) {
+        const value = tickToValue(tick, min, step);
+
+        expect(Number.isFinite(value)).toBe(true);
+        expect(value).toBeGreaterThanOrEqual(min);
+        expect(value).toBeLessThanOrEqual(max);
+        expect(isOnGrid(value, min, step)).toBe(true);
+      }
+    }
+  );
+
+  test("holds a 0.3 grid on a 1e21 origin at its origin alone", () => {
+    // The concrete counterexample: 436907 ticks were offered before the limit was shared with the schema,
+    // and every interaction above the midpoint submitted a value 0.1 off the grid - which the response rule
+    // rejects, tolerating only a millionth of the step.
+    expect(getTickCount(1e21, 1.0000000000000001e21, 0.3)).toBe(0);
+    expect(tickToValue(0, 1e21, 0.3)).toBe(1e21);
+    expect(isOnGrid(tickToValue(0, 1e21, 0.3), 1e21, 0.3)).toBe(true);
+  });
+
+  test("never offers the half-step values a 0.2 grid at 1e15 would round onto", () => {
+    // 1000000000000000.5 and 1000000000000000.9 are each a whole half-step off this grid, and are exactly
+    // the values the unbounded reconstruction produced. The offered grid stops long before them.
+    const tickCount = getTickCount(0, 1e15, 0.2);
+    const highest = tickToValue(tickCount, 0, 0.2);
+
+    expect(highest).toBeLessThan(1000000000000000);
+    for (const tick of [tickCount, tickCount - 1, tickCount - 2]) {
+      expect(isOnGrid(tickToValue(tick, 0, 0.2), 0, 0.2)).toBe(true);
+    }
   });
 });
 
