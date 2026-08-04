@@ -4346,6 +4346,13 @@ export const ZSurveyElementSummarySlider = z.object({
   type: z.literal(TSurveyElementTypeEnum.Slider),
   element: ZSurveySliderElement,
   responseCount: z.number(),
+  /**
+   * The mean of the submitted values, unrounded.
+   *
+   * A Slider's precision is whatever its author configured, so this figure is carried at full precision and
+   * how many decimals to SHOW is decided by the card from the element's own step and range. Rounding it here
+   * would report 0 for every answer on a range finer than the rounding.
+   */
   average: z.number(),
   dismissed: z.object({
     count: z.number(),

@@ -27,13 +27,13 @@ interface SliderElementProps {
  * summary's dismissed count depend on.
  *
  * The control reports a value once an interaction settles rather than once per movement, so each report is
- * one answer: the response record is written once and one segment of time to completion is billed. The
- * instant that segment starts is held in a ref rather than in state, for two reasons. `getUpdatedTtc` ADDS
- * the duration it is handed, so a second interaction billed from the element's mount time would re-charge
- * time the first one already paid for; advancing the ref makes each interaction pay only for itself. And
- * writing it as state would re-run `useTtc`'s `visibilitychange` registration on every answer, replacing a
- * listener that has not changed. The ref still follows the mount and tab-visible resets `useTtc` performs
- * through `startTime`, so the two never diverge.
+ * one answer: the response record is written once and one segment of time to completion is billed.
+ * `getUpdatedTtc` ADDS the duration it is handed, so every segment has to start where the previous one
+ * ended - otherwise a second interaction billed from the element's mount time would re-charge time the first
+ * one already paid for. `billElapsedTime` closes and reopens the segment in one clock reading, and advances
+ * both records of where it begins: this component's own ref, which is read synchronously, and the
+ * `startTime` state that `useTtc` bills from when the tab is hidden. Keeping those two in step is what stops
+ * an answer and a subsequent tab switch from charging the same seconds twice.
  */
 export function SliderElement({
   element,
@@ -52,19 +52,29 @@ export function SliderElement({
   const { t } = useTranslation();
   useTtc(element.id, ttc, setTtc, startTime, setStartTime, isCurrent);
 
-  // The instant this element's unbilled segment began. `useTtc` owns `startTime` - it sets it on mount and
-  // again whenever the tab becomes visible - so following it here is what keeps the ref authoritative
-  // without this component ever writing to it.
+  // The instant this element's unbilled segment began, held in a ref so that billing reads it
+  // synchronously - a second answer in the same tick must not bill from a state value that has not been
+  // applied yet. `useTtc` also resets `startTime` on mount and whenever the tab becomes visible, so the ref
+  // follows it.
   const segmentStartRef = useRef(startTime);
   useEffect(() => {
     segmentStartRef.current = startTime;
   }, [startTime]);
 
-  /** Closes the current segment, bills it to this element, and opens the next from the same reading. */
+  /**
+   * Closes the current segment, bills it to this element, and opens the next from the same reading.
+   *
+   * Both records of where the segment starts are advanced, because both are read. This component bills from
+   * the ref; `useTtc` bills the same segment from `startTime` when the tab is hidden. Advancing only the ref
+   * would leave the hook measuring from the mount, so a tab hidden after an answer would re-charge every
+   * instant the answer had already paid for - an answer at five seconds followed by a hide at ten would
+   * record fifteen.
+   */
   const billElapsedTime = () => {
     const now = performance.now();
     setTtc(getUpdatedTtc(ttc, element.id, now - segmentStartRef.current));
     segmentStartRef.current = now;
+    setStartTime(now);
   };
 
   const handleChange = (sliderValue: number) => {

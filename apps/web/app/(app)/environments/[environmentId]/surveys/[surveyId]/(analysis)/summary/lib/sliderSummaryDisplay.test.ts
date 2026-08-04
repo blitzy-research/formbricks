@@ -91,12 +91,41 @@ describe("getSliderSummaryDisplay — average text", () => {
     expect(averageTextFor({ average: -12.5, range: { min: -50, max: 50 }, step: 5 })).toBe("-12.50");
   });
 
-  test("prints two decimals whatever the grid's own precision is", () => {
-    // Not a precision the card derives: `getElementSummary` already rounds the mean through this folder's
-    // shared two-decimal helper, so two places is all the precision that reaches here - and it is what every
-    // averaged sibling card prints. A range finer than 0.01 therefore reads as 0.00, exactly as a mean on such
-    // a range does on the rating and opinion-scale cards, and the bar below still resolves the full range.
-    expect(averageTextFor({ average: 0, range: { min: 0, max: 0.001 }, step: 0.0001 })).toBe("0.00");
+  test("prints a fine grid's mean at the precision that grid calls for", () => {
+    // The precision is derived from the element's own configuration. At the two decimals the sibling cards
+    // print, every possible mean of this range would read as 0.00 - which is the figure the card exists to
+    // report. Four places for the grid, two more for a mean that sits between two of its points.
+    expect(averageTextFor({ average: 0.0005, range: { min: 0, max: 0.001 }, step: 0.0001 })).toBe("0.000500");
+  });
+
+  test("prints a mean between two points of a fine grid at full precision", () => {
+    // The mean of 0.0001 and 0.0002 - a figure that is not itself selectable, and that two decimals would
+    // report as 0.00 and the grid's own four as 0.0002 rather than 0.00015.
+    expect(averageTextFor({ average: 0.00015, range: { min: 0, max: 0.001 }, step: 0.0001 })).toBe(
+      "0.000150"
+    );
+  });
+
+  test("takes the precision from the bounds when they are finer than the step", () => {
+    expect(averageTextFor({ average: 10.5, range: { min: 0.005, max: 20.005 }, step: 5 })).toBe("10.50000");
+  });
+
+  test("takes the precision from a step written in exponential notation", () => {
+    // `String(1e-7)` carries no decimal point at all, so reading its fraction alone would report no places
+    // and print every mean of this range as 0.00.
+    expect(averageTextFor({ average: 5e-7, range: { min: 0, max: 1e-6 }, step: 1e-7 })).toBe("0.000000500");
+  });
+
+  test("falls back to exponential notation when no fixed-point form can express the mean", () => {
+    // A grid this fine needs more decimals than `toFixed` can produce, and printing 0 for a mean that is not
+    // zero is the loss this fallback exists to prevent.
+    expect(averageTextFor({ average: 5e-30, range: { min: 0, max: 1e-28 }, step: 1e-30 })).toBe("5e-30");
+  });
+
+  test("still prints a genuine zero as a fixed figure on a grid too fine for one", () => {
+    expect(averageTextFor({ average: 0, range: { min: 0, max: 1e-28 }, step: 1e-30 })).toBe(
+      "0.00000000000000000000"
+    );
   });
 
   test("prints an offset grid's mean at the same two decimals", () => {

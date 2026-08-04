@@ -201,9 +201,11 @@ const checkSliderValueType = (
 
   return {
     ruleId: "sliderValueType",
-    ruleType: "stepMultipleOf", // Structural field only - the numeric contract is not a validation rule
+    // Not a rule verdict: no rule ran. The category says what refused the answer, so the API metadata agrees
+    // with the message beside it rather than naming a rule that was never reached.
+    ruleType: "valueType",
     message: t("errors.invalid_format"),
-  } as TValidationError;
+  };
 };
 
 /**
@@ -258,9 +260,10 @@ const checkSliderConfiguration = (
 
   return {
     ruleId: "sliderConfiguration",
-    ruleType: "stepMultipleOf", // Structural field only - the configuration is not a validation rule
+    // The element's own definition is what failed here, not the respondent's answer and not a rule.
+    ruleType: "elementConfiguration",
     message: t("errors.invalid_format"),
-  } as TValidationError;
+  };
 };
 
 /**

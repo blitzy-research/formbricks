@@ -4,6 +4,7 @@ import { ElementError } from "@/components/general/element-error";
 import { ElementHeader } from "@/components/general/element-header";
 import { Label } from "@/components/general/label";
 import { cn } from "@/lib/utils";
+import { getTickCount, tickToValue, valueToTick } from "./slider-grid";
 
 /** Fallback required marker, kept identical to the default `ElementHeader` applies. */
 const DEFAULT_REQUIRED_LABEL = "Required";
@@ -38,30 +39,22 @@ const VALUE_ADJUSTING_KEYS = new Set([
 ]);
 
 /**
- * Relative tolerance applied when counting grid steps.
+ * Reduces a headline or description to the text an accessible name may be built from.
  *
- * Dividing by a decimal step leaves binary-fraction noise in the count, so a count that is a whole number
- * arithmetically can come out a hair above or below one. The same order of magnitude the shared
- * `stepMultipleOf` response rule tolerates is allowed here, so the two agree on where a grid point is.
+ * Either string may carry the markup a rich-text editor produced, and markup in an accessible name is read
+ * out verbatim by a screen reader. Parsing is skipped entirely when there is no tag to remove, and a parse
+ * that yields nothing falls back to the original string rather than to an empty name.
  */
-const GRID_TOLERANCE = 1e-9;
+const toPlainText = (input: string): string => {
+  if (!input.includes("<")) return input;
 
-/**
- * Decimal places a number needs, including the magnitudes JavaScript prints in exponential notation.
- */
-const decimalPlaces = (input: number): number => {
-  if (!Number.isFinite(input)) return 0;
-
-  const [mantissa, exponent] = String(Math.abs(input)).split("e");
-  const fraction = mantissa.split(".")[1] ?? "";
-  if (!exponent) return fraction.length;
-
-  return Math.max(fraction.length - Number(exponent), 0);
+  try {
+    const parsed = new DOMParser().parseFromString(input, "text/html").body.textContent;
+    return parsed && parsed.trim() !== "" ? parsed : input;
+  } catch {
+    return input;
+  }
 };
-
-/** Rounds to a fixed number of decimals, which is what removes accumulated binary-fraction noise. */
-const roundToScale = (input: number, scale: number): number =>
-  Number(input.toFixed(Math.min(Math.max(scale, 0), 20)));
 
 /**
  * Props for the Slider element component.
@@ -131,10 +124,11 @@ interface SliderProps {
  * intermediate position a drag passes through.
  *
  * Accessibility. The handle exposes `role="slider"` with a live `aria-valuenow` / `aria-valuemin` /
- * `aria-valuemax`, and the control supports dragging, pressing anywhere on the track, the arrow keys,
- * Page Up / Page Down and Home / End. Required-ness is announced through `aria-describedby`, because ARIA
- * defines no required state for the slider role, and an error message is announced the same way alongside
- * `aria-invalid`.
+ * `aria-valuemax` / `aria-valuetext` in the element's own numbers, and the control supports dragging,
+ * pressing anywhere on the track, the arrow keys, Page Up / Page Down and Home / End. The handle is named
+ * from the headline and described by the description, both as text rather than as the markup a rich editor
+ * may have produced. Required-ness is announced through `aria-describedby`, because ARIA defines no required
+ * state for the slider role, and an error message is announced the same way alongside `aria-invalid`.
  *
  * Appearance. Every part is token-driven - no colour, radius or font is hard-coded and no new `--fb-*`
  * variable is introduced - and each carries the `data-slot` attribute a consumer can target: `slider`,
@@ -163,9 +157,16 @@ function Slider({
   videoUrl,
 }: Readonly<SliderProps>): React.JSX.Element {
   // Implementation note - built on `@radix-ui/react-slider`, which owns dragging, pressing anywhere on
-  // the track, the full key contract, `role="slider"` with the live `aria-value*` set, right-to-left
-  // inversion and snapping to `min + n * step`. None of that is re-implemented here, and the composition
-  // and `data-slot` attributes follow `progress.tsx`. Three details of the integration are not obvious:
+  // the track, the full key contract, `role="slider"` with the live `aria-value*` set and right-to-left
+  // inversion. None of that is re-implemented here, and the composition and `data-slot` attributes follow
+  // `progress.tsx`. Four details of the integration are not obvious:
+  //
+  // Tick space. The primitive is driven with whole tick indices - `0 .. tickCount`, step `1` - rather than
+  // with the element's own numbers, and `slider-grid.ts` converts a tick to a number once, on the way out.
+  // That module carries the reasoning; what matters here is the consequence: the primitive's snapping and
+  // rounding are exact integer arithmetic, so no configuration the element schema admits can produce a
+  // value off the grid, and the control needs no correction pass of its own. Because the primitive then
+  // reports ticks, the `aria-value*` set it publishes is replaced below with the real numeric domain.
   //
   // Live position versus committed answer. A drag reports a value for every movement, and each one that
   // reached the renderer would clone the block and survey response records and re-run the
@@ -174,31 +175,45 @@ function Slider({
   // interaction from `onValueCommit`. The caller's `value` remains the source of truth and is reconciled
   // back into the live position whenever it changes.
   //
-  // Recovering the parked value. The primitive raises neither `onValueChange` nor `onValueCommit` when an
-  // interaction resolves to the value already held, and an unanswered control parks its thumb at `min`, so
-  // every interaction asking for the minimum - `Home`, a back-stepping arrow, or a press at the low end of
-  // the track - would leave the answer unrecorded: a required slider could not be completed at all and an
-  // optional one would silently drop the low end of its own range. `commitParkedValue` closes that gap,
-  // and only while the control is still unanswered, because once an answer exists every real change
-  // reaches `onValueCommit` on its own.
+  // Recovering the value on show. The primitive raises neither `onValueChange` nor `onValueCommit` when an
+  // interaction resolves to the tick already held, so an interaction asking for the position the handle is
+  // already on goes unreported. That covers two cases the respondent has to be able to express. An
+  // unanswered control parks its handle at `min`, so `Home`, a back-stepping arrow or a press at the low end
+  // of the track would leave the answer unrecorded - a required slider could not be completed at all, and an
+  // optional one would silently drop the low end of its own range. And a stored value the presentation could
+  // not show faithfully is held at the nearest point it can, so pressing that point - the obvious way to
+  // accept what is on screen - would leave the unshowable value in place. `commitDisplayedValue` closes
+  // both: it records what the handle is showing, and `commit` ignores it when that is already the answer.
   //
   // Thumb resolution under `preact/compat`. The respondent runtime builds this package with React aliased
   // to `preact/compat`, and the primitive resolves which value its thumb owns by looking that thumb up in
   // a collection registered from a `useEffect`. Under the alias, the state update the thumb's own ref
   // callback performs re-renders in a microtask, before deferred effects run, so the memoised lookup
-  // misses on the single pass that computes it, settles on -1 and never recomputes: the thumb renders
-  // `display: none`, publishes no `aria-valuenow` and the keyboard addresses a thumb that is not there.
-  // Replacing the thumb's DOM node once, after the collection has been registered, forces that lookup to
-  // run again against a populated collection. `thumbGeneration` does exactly that, exactly once, and only
-  // when the symptom is actually observed - so it is inert under a renderer that flushes effects before
-  // re-rendering.
+  // misses on the single pass that computes it, settles on -1 and never recomputes: the primitive finds no
+  // value for the thumb, hides it with `display: none`, and the keyboard addresses a thumb that is not
+  // there. Replacing the thumb's DOM node once, after the collection has been registered, forces that
+  // lookup to run again against a populated collection. `thumbGeneration` does exactly that, exactly once,
+  // and only when the symptom is actually observed - so it is inert under a renderer that flushes effects
+  // before re-rendering.
   const hasError = Boolean(errorMessage);
   const errorId = `${inputId}-error`;
   const requiredId = `${inputId}-required`;
+  const labelId = `${inputId}-label`;
+  const descriptionId = `${inputId}-description`;
+
+  // The thumb carries `role="slider"`, so it is the element whose name and description assistive technology
+  // reads. The header's own label cannot supply either: it is rendered for a `span`, which is not a
+  // labelable element, so the association has no effect. Text-only copies of the headline and the
+  // description are rendered instead, and referenced from the thumb by id.
+  const accessibleName = toPlainText(headline);
+  const accessibleDescription = description ? toPlainText(description) : undefined;
   // ARIA defines no required state for the `slider` role, so required-ness is announced as a description
-  // alongside the value instead.
+  // alongside the value instead, in reading order: what the question asks, then that it must be answered,
+  // then what is wrong with the current answer.
   const describedBy =
-    [required ? requiredId : null, hasError ? errorId : null].filter(Boolean).join(" ") || undefined;
+    [accessibleDescription ? descriptionId : null, required ? requiredId : null, hasError ? errorId : null]
+      .filter(Boolean)
+      .join(" ") || undefined;
 
   // A value that is not a finite number is not an answer, and is never coerced into one.
   const answeredValue = typeof value === "number" && Number.isFinite(value) ? value : undefined;
@@ -215,26 +230,33 @@ function Slider({
 
   const hasValue = liveValue !== undefined;
 
-  // The primitive positions its thumb from a numeric array, so an answer is clamped into the configured
-  // bounds for display and an unanswered control falls back to `min`. A value outside the range is the one
-  // thing the presentation cannot show faithfully - there is no track position for it - so it is drawn at
-  // the nearer bound while the response value itself is left untouched for the shared evaluator to reject.
-  const trackValue = [Math.min(Math.max(liveValue ?? min, min), max)];
   const safeStep = Number.isFinite(step) && step > 0 ? step : FALLBACK_STEP;
+  // The grid the configuration describes, as a count of whole steps. Zero means it describes none, which
+  // only a draft an author is still typing can produce; the primitive still renders one usable handle.
+  const tickCount = getTickCount(min, max, safeStep);
+
+  // Where the handle sits, as a tick. An unanswered control parks it at the grid's origin. A value outside
+  // the range - or off the grid - is the one thing the presentation cannot show faithfully, since there is
+  // no track position for it, so the handle is drawn at the nearest point while the response value itself is
+  // left untouched for the shared evaluator to judge.
+  const displayedTick = hasValue ? valueToTick(liveValue, min, safeStep, tickCount) : 0;
+  // The number that tick addresses, which is what an interaction resolving to the current position records.
+  const displayedValue = tickToValue(displayedTick, min, safeStep);
 
   // The primitive understands only "ltr" | "rtl", so "auto" becomes `undefined` and it resolves the
   // direction itself instead of being handed a value it cannot read. Callers keep the repository's
   // three-value contract, which is still applied to the wrapper, the labels and the error message.
   const sliderDir = dir === "auto" ? undefined : dir;
 
-  // See "Thumb resolution under `preact/compat`" above.
+  // See "Thumb resolution under `preact/compat`" above. The symptom is read from the style the primitive
+  // applies when it cannot match the thumb to a value, rather than from the value it publishes, because the
+  // `aria-value*` set below is supplied by this component and is therefore present either way.
   const thumbRef = React.useRef<HTMLSpanElement | null>(null);
   const [thumbGeneration, setThumbGeneration] = React.useState(0);
   React.useEffect(() => {
     if (thumbGeneration > 0) return;
     const thumb = thumbRef.current;
-    // A resolved thumb always publishes its value, because this control always supplies one.
-    if (thumb && !thumb.hasAttribute("aria-valuenow")) {
+    if (thumb?.style.display === "none") {
       setThumbGeneration(1);
     }
   }, [thumbGeneration]);
@@ -244,69 +266,49 @@ function Slider({
   // question. A ref rather than state, because nothing about it is rendered.
   const pressBeganOnControl = React.useRef(false);
 
-  /**
-   * Holds a reported value to the grid the element actually declares.
-   *
-   * The primitive snaps to `min + n * step` and then rounds the result to the *step's* own decimal
-   * precision, which is coarser than the grid whenever `min` carries more decimals than `step`: a range of
-   * `10.5` to `20.5` in steps of `1` reports whole numbers, none of which is a point on its own grid, and
-   * the shared `stepMultipleOf` response rule would reject every one of them. Rebuilding the value from
-   * the grid's own origin removes that gap. A grid point needs no more decimals than the wider of its
-   * origin and its step, so rounding to that scale is exact rather than lossy, and every ordinary
-   * configuration comes back out of here as the number the primitive already reported.
-   */
-  const snapToGrid = (candidate: number): number => {
-    if (!Number.isFinite(candidate) || !Number.isFinite(min) || !Number.isFinite(max)) return candidate;
-
-    // Ties resolve downwards, which is what recovers the point the interaction asked for: the primitive
-    // rounds a half-step away from the grid upwards. The tolerance keeps a ratio that only *looks* like a
-    // tie, because of binary-fraction noise, on the side it belongs to.
-    const stepRatio = (candidate - min) / safeStep;
-    const wholeSteps = Math.ceil(stepRatio - 0.5 - GRID_TOLERANCE * Math.max(1, Math.abs(stepRatio)));
-    // Held inside the range, because the upper bound itself need not be a point on the grid.
-    const highestStep = Math.max(Math.floor((max - min) / safeStep + GRID_TOLERANCE), 0);
-    const heldSteps = Math.min(Math.max(wholeSteps, 0), highestStep);
-
-    return roundToScale(min + heldSteps * safeStep, Math.max(decimalPlaces(min), decimalPlaces(safeStep)));
-  };
+  /** The number a tick reported by the primitive addresses. */
+  const valueOfTick = (tick: number): number => tickToValue(tick, min, safeStep);
 
   /** Records an answer, at most once per distinct value, and never while disabled. */
   const commit = (next: number): void => {
+    // A reconstruction that is not a finite number is not an answer and is never emitted; the grid module
+    // returns `NaN` rather than an approximation when the arithmetic leaves the double range.
     if (disabled || !Number.isFinite(next)) return;
+    if (committedValueRef.current === next) return;
 
-    const answer = snapToGrid(next);
-    if (committedValueRef.current === answer) return;
-
-    committedValueRef.current = answer;
-    onChange(answer);
+    committedValueRef.current = next;
+    onChange(next);
   };
 
   /**
-   * Records the value the thumb is parked on, for the one selection the primitive cannot report.
+   * Records the value the handle is showing, for the selections the primitive does not report.
    *
-   * Restricted to the unanswered control: an interaction that lands on the value already answered has
-   * nothing to record, and every interaction that does change the value reaches `onValueCommit` itself.
+   * The primitive raises neither `onValueChange` nor `onValueCommit` when an interaction resolves to the
+   * tick it already holds, which is every interaction asking for the position the handle is parked on: an
+   * unanswered control would never record its own minimum, and a stored value the presentation had to hold
+   * at a bound could not be corrected by pressing that bound. `commit` ignores a value that is already the
+   * answer, so an interaction that genuinely changes nothing still records nothing.
    */
-  const commitParkedValue = (): void => {
-    if (committedValueRef.current !== undefined) return;
-
-    commit(trackValue[0]);
+  const commitDisplayedValue = (): void => {
+    commit(displayedValue);
   };
 
   /** Moves the presentation only. The answer is recorded when the interaction settles. */
   const handleValueChange = (next: number[]): void => {
     if (disabled) return;
 
-    const [nextValue] = next;
-    if (typeof nextValue !== "number" || !Number.isFinite(nextValue)) return;
+    const [nextTick] = next;
+    if (typeof nextTick !== "number") return;
 
-    // Snapped here as well as on commit, so the thumb, the readout and the recorded answer are one value.
-    setLiveValue(snapToGrid(nextValue));
+    const nextValue = valueOfTick(nextTick);
+    if (!Number.isFinite(nextValue)) return;
+
+    setLiveValue(nextValue);
   };
 
   /** The primitive's interaction-completion callback: one pointer drag or one key press. */
   const handleValueCommit = (next: number[]): void => {
-    commit(next[0]);
+    commit(valueOfTick(next[0]));
   };
 
   const handleKeyUp = (event: React.KeyboardEvent<HTMLSpanElement>): void => {
@@ -314,34 +316,45 @@ function Slider({
     // so this is the first point at which a key that resolved to the parked value can be answered.
     if (!VALUE_ADJUSTING_KEYS.has(event.key)) return;
 
-    commitParkedValue();
+    commitDisplayedValue();
   };
 
   const handlePointerDown = (event: React.PointerEvent<HTMLSpanElement>): void => {
-    // Primary button only, matching the interaction the primitive itself acts on.
     pressBeganOnControl.current = event.button === 0;
+    if (pressBeganOnControl.current) return;
+
+    // A press with any other button is refused outright rather than merely left unrecorded. The primitive
+    // acts on every press it sees, and it composes this handler ahead of its own, so preventing the default
+    // here is what stops it starting a slide - without which a right or middle press on the track would
+    // move the handle and answer the question.
+    event.preventDefault();
   };
 
   const handlePointerUp = (): void => {
     if (!pressBeganOnControl.current) return;
     pressBeganOnControl.current = false;
 
-    commitParkedValue();
+    commitDisplayedValue();
   };
 
   const handlePointerCancel = (): void => {
     pressBeganOnControl.current = false;
+    // A cancelled press expresses no selection, so the presentation returns to the answer that is actually
+    // recorded. Without this the handle and the readout would keep showing the last position a drag passed
+    // through, and a filled handle would claim an answer that was never committed.
+    setLiveValue(committedValueRef.current);
   };
 
   return (
     <div className="w-full space-y-4" id={elementId} dir={dir}>
-      {/* Headline, description, required marker and optional media */}
+      {/* Headline, description, required marker and optional media. No `htmlFor`: the control the header
+          describes is a `span` with `role="slider"`, which a label cannot be associated with, so the
+          association is made from the thumb instead - see `accessibleName` above. */}
       <ElementHeader
         headline={headline}
         description={description}
         required={required}
         requiredLabel={requiredLabel}
-        htmlFor={inputId}
         imageUrl={imageUrl}
         videoUrl={videoUrl}
       />
@@ -358,10 +371,28 @@ function Slider({
           </div>
         ) : null}
 
+        {/* The accessible name and description of the control, as text-only nodes the thumb points at. The
+            header renders the same strings visually; these carry no markup, so a headline written in a rich
+            editor is announced as the words it contains rather than as its tags.
+
+            `aria-hidden` keeps them out of the reading order, where they would repeat the header that is
+            already there: a node named directly by `aria-labelledby` or `aria-describedby` still supplies
+            its text, which is the whole point of referencing it by id rather than copying it into an
+            attribute that cannot follow the header's own wording. */}
+        <span aria-hidden="true" className="sr-only" id={labelId}>
+          {accessibleName}
+        </span>
+        {accessibleDescription ? (
+          <span aria-hidden="true" className="sr-only" id={descriptionId}>
+            {accessibleDescription}
+          </span>
+        ) : null}
+
         {/* Required state as an accessible description. The header shows this marker visually, but it sits
-            outside the label, so this copy is what the thumb itself can point at. */}
+            outside the label, so this copy is what the thumb itself can point at - hidden from the reading
+            order for the same reason as the two above, since the header already announces it. */}
         {required ? (
-          <span className="sr-only" id={requiredId}>
+          <span aria-hidden="true" className="sr-only" id={requiredId}>
             {requiredLabel}
           </span>
         ) : null}
@@ -378,16 +409,15 @@ function Slider({
           </output>
         ) : null}
 
-        {/* `id` lives here so the header's and the readout's `htmlFor` both resolve to a real element.
-            `aria-required` stays on the root rather than the thumb, because ARIA does not define it for
-            the `slider` role. */}
+        {/* Driven in tick space - see the component's note. `id` lives here so the readout's `htmlFor`
+            resolves to a real element; `output`'s `for` may reference any element, unlike a label's. */}
         <SliderPrimitive.Root
           data-slot="slider"
           id={inputId}
-          min={min}
-          max={max}
-          step={safeStep}
-          value={trackValue}
+          min={0}
+          max={tickCount}
+          step={1}
+          value={[displayedTick]}
           onValueChange={handleValueChange}
           onValueCommit={handleValueCommit}
           onKeyUp={handleKeyUp}
@@ -396,7 +426,6 @@ function Slider({
           onPointerCancel={handlePointerCancel}
           disabled={disabled}
           dir={sliderDir}
-          aria-required={required}
           className={cn(
             "relative flex w-full touch-none select-none items-center",
             disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"
@@ -410,14 +439,22 @@ function Slider({
           {/* The thumb carries `role="slider"`, the live value and the focus, so the accessible name and
               the descriptions belong here rather than on the root.
 
+              The `aria-value*` set is supplied here rather than left to the primitive, which would publish
+              the tick index it is driven with. These are the numbers the respondent is choosing between,
+              and `aria-valuetext` is what a screen reader reads in place of a bare number.
+
               `asChild` renders the element below in its place, which is what lets the node be replaced
               once when the primitive fails to resolve its thumb - see the component's note on
               `preact/compat`. The primitive merges its own props, styles and ref onto it. */}
           <SliderPrimitive.Thumb
             data-slot="slider-thumb"
-            aria-label={headline}
+            aria-labelledby={labelId}
             aria-invalid={hasError || undefined}
             aria-describedby={describedBy}
+            aria-valuemin={min}
+            aria-valuemax={max}
+            aria-valuenow={displayedValue}
+            aria-valuetext={String(displayedValue)}
             className={cn(
               "border-brand block h-5 w-5 rounded-full border-2 outline-none",
               "transition-[background-color,box-shadow]",

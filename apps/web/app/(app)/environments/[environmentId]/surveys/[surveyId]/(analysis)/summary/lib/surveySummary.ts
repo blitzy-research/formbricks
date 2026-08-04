@@ -1090,41 +1090,57 @@ export const getElementSummary = async (
 
         const totalResponseCount = answeredValues.length;
 
-        // Neumaier's compensated summation over each answer's SHARE of the mean, `answer / count`.
-        // Dividing before adding is what makes the arithmetic safe: every term is at most one answer's
-        // own magnitude, and the exact sum of the shares lies between the smallest and the largest
-        // answer, so no partial sum can leave the range the answers came from and no intermediate can
-        // overflow. The compensation carries the low-order bits each addition rounds away, which is what
-        // keeps the result faithful where a plain sum of shares would drift - it reports the exact mean
-        // of the three extreme answers above, and reproduces the mean of a fine range to the last bit.
-        // An empty answer set never enters the loop, so it yields 0 rather than a division by zero.
-        let shareSum = 0;
+        // Neumaier's compensated summation, which carries the low-order bits each addition rounds away and
+        // is what keeps a mean of many fine answers faithful where a plain sum would drift.
+        //
+        // WHAT is summed depends on the magnitudes involved, because the two forms fail in opposite
+        // directions. Summing the answers and dividing once is exact down to the subnormals, but a running
+        // total can overflow to Infinity for answers near the top of the double range. Summing each answer's
+        // SHARE of the mean - `answer / count` - cannot overflow, because every term is at most one answer's
+        // own magnitude and the exact sum lies between the smallest and the largest answer, but it destroys a
+        // set of answers so small that dividing them underflows to zero. So the answers themselves are summed
+        // whenever the total demonstrably cannot overflow - which is every ordinary survey - and the shares
+        // only where it could.
+        const largestMagnitude = answeredValues.reduce(
+          (largest, answer) => Math.max(largest, Math.abs(answer)),
+          0
+        );
+        const sumCannotOverflow = Number.isFinite(largestMagnitude * totalResponseCount);
+
+        let runningTotal = 0;
         let roundedOffBits = 0;
         answeredValues.forEach((answer) => {
-          const share = answer / totalResponseCount;
-          const carried = shareSum + share;
+          const term = sumCannotOverflow ? answer : answer / totalResponseCount;
+          const carried = runningTotal + term;
           roundedOffBits +=
-            Math.abs(shareSum) >= Math.abs(share) ? shareSum - carried + share : share - carried + shareSum;
-          shareSum = carried;
+            Math.abs(runningTotal) >= Math.abs(term)
+              ? runningTotal - carried + term
+              : term - carried + runningTotal;
+          runningTotal = carried;
         });
-        const mean = shareSum + roundedOffBits;
-
-        // Rounded to two decimals through the same helper every other average in this file uses, so a
-        // Slider reads like the opinion-scale and rating cards beside it - which print exactly this figure.
-        const average = convertFloatTo2Decimal(mean);
+        // An empty answer set never enters the loop, so it yields 0 rather than a division by zero.
+        const compensatedTotal = runningTotal + roundedOffBits;
+        const mean = sumCannotOverflow
+          ? totalResponseCount > 0
+            ? compensatedTotal / totalResponseCount
+            : 0
+          : compensatedTotal;
 
         summary.push({
           type: element.type,
           element,
           responseCount: totalResponseCount,
-          // `convertFloatTo2Decimal` multiplies before it rounds, so a mean within a couple of orders of
-          // magnitude of the largest double can still overflow inside it even though the summation above
-          // cannot. A non-finite average would neither satisfy `ZSurveyElementSummarySlider`
-          // (`average: z.number()`) nor survive the JSON serialization that carries this summary to the
-          // client, where it would arrive as null. Reporting 0 in that case also covers the one input the
-          // summation cannot absorb: a non-finite value already stored as an answer, which no arithmetic
-          // over the shares can turn back into a number.
-          average: Number.isFinite(average) ? average : 0,
+          // The mean is published exactly as it was computed, at full precision. Rounding it here - as this
+          // folder's shared two-decimal helper would - is lossy for any range finer than 0.01 and reports 0
+          // for a mean large enough to overflow that helper's own `mean * 100`, and neither loss can be
+          // recovered by the card. How many decimals to SHOW is a presentation decision, and it is taken from
+          // the element's own step and range in `sliderSummaryDisplay.ts`.
+          //
+          // The finiteness guard stays: a non-finite average would neither satisfy
+          // `ZSurveyElementSummarySlider` (`average: z.number()`) nor survive the JSON serialization that
+          // carries this summary to the client, where it would arrive as null. It covers the one input the
+          // arithmetic above cannot absorb - a non-finite value already stored as an answer.
+          average: Number.isFinite(mean) ? mean : 0,
           dismissed: {
             count: dismissed,
           },

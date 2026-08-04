@@ -185,6 +185,24 @@ function getSlot(container: Element, slot: string): HTMLElement {
 }
 
 /**
+ * Sends the tab away, the way a respondent switching windows does.
+ *
+ * `visibilityState` is a read-only getter in jsdom, so it is redefined for the dispatch and restored
+ * afterwards - the hook reads it inside its listener, which is what decides whether the segment is billed or
+ * restarted.
+ */
+function hideTab(): void {
+  const descriptor = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+  fireEvent(document, new Event("visibilitychange"));
+
+  if (descriptor) {
+    Object.defineProperty(Document.prototype, "visibilityState", descriptor);
+  }
+  Reflect.deleteProperty(document, "visibilityState");
+}
+
+/**
  * The inline position the primitive gives the handle.
  *
  * The primitive wraps its thumb in a positioning span and puts the offset along the track there rather than on
@@ -326,13 +344,23 @@ describe("SliderElement under the production preact alias", () => {
     });
 
     test("gives the slider root an id of its own rather than reusing the element's", () => {
-      // The element id belongs to the wrapper. Handing the same id to the control would leave two nodes
-      // answering to it, and the header's label points at whichever comes first - the wrapper.
-      const { container } = render(<SliderHarness />);
+      // The element id belongs to the wrapper, and the control's own id is what the value readout points at.
+      // Handing the same id to both would leave two nodes answering to it.
+      const { container } = render(<SliderHarness initialValue={50} />);
 
       expect(getSlot(container, "slider").id).toBe("slider-element-input");
       expect(container.querySelectorAll('[id="slider-element"]')).toHaveLength(1);
-      expect(container.querySelector('label[for="slider-element-input"]')?.textContent).toContain(
+      expect(container.querySelector("output")?.getAttribute("for")).toBe("slider-element-input");
+    });
+
+    test("names the control with the element's own headline", () => {
+      // `role="slider"` sits on the handle, which no label can be associated with, so the name is carried by
+      // the node the handle references rather than by a `label[for]`.
+      const { container } = render(<SliderHarness />);
+
+      expect(container.querySelector('label[for="slider-element-input"]')).toBeNull();
+      expect(getControl().getAttribute("aria-labelledby")).toBe("slider-element-input-label");
+      expect(container.querySelector("#slider-element-input-label")?.textContent).toBe(
         "How satisfied are you?"
       );
     });
@@ -552,8 +580,14 @@ describe("SliderElement under the production preact alias", () => {
     test("renders the localized headline, description and endpoint labels", () => {
       render(<SliderHarness />);
 
-      expect(screen.getByText("How satisfied are you?")).toBeTruthy();
-      expect(screen.getByText("Drag the handle to pick a value")).toBeTruthy();
+      // The headline and the description each render twice: the copy the respondent reads, and the hidden
+      // copy the handle references for its accessible name and description.
+      expect(
+        screen.getByText("How satisfied are you?", { selector: '[data-variant="headline"]' })
+      ).toBeTruthy();
+      expect(
+        screen.getByText("Drag the handle to pick a value", { selector: '[data-variant="description"]' })
+      ).toBeTruthy();
       expect(screen.getByText("Not satisfied")).toBeTruthy();
       expect(screen.getByText("Very satisfied")).toBeTruthy();
     });
@@ -572,12 +606,21 @@ describe("SliderElement under the production preact alias", () => {
       expect(container.querySelector("#slider-element-input-required")?.textContent).toBe("common.required");
     });
 
-    test("leaves an optional slider undescribed", () => {
+    test("does not describe an optional slider as required", () => {
       const element = createSliderElement({ required: false });
       const { container } = render(<SliderHarness element={element} />);
 
-      expect(getControl().getAttribute("aria-describedby")).toBeNull();
+      // The description the author wrote is still announced; what an optional slider must not carry is the
+      // required copy.
+      expect(getControl().getAttribute("aria-describedby")).toBe("slider-element-input-description");
       expect(container.querySelector("#slider-element-input-required")).toBeNull();
+    });
+
+    test("describes a slider with neither description, required state nor error not at all", () => {
+      const element = createSliderElement({ required: false, subheader: undefined });
+      render(<SliderHarness element={element} />);
+
+      expect(getControl().getAttribute("aria-describedby")).toBeNull();
     });
 
     test("surfaces a validation message and points the control at it", () => {
@@ -642,6 +685,52 @@ describe("SliderElement under the production preact alias", () => {
       const total = onTtc.mock.calls[2][0]["slider-element"] as number;
       expect(Number.isFinite(total)).toBe(true);
       expect(total).toBeGreaterThanOrEqual(0);
+    });
+
+    test("does not charge a tab switch after an answer for the time the answer already paid", () => {
+      // The real `useTtc` is in play here - this suite mocks nothing but the icon library - so this is the
+      // whole path: the hook bills `performance.now() - startTime` when the tab is hidden, and the wrapper
+      // bills its own segment when the control reports a value. Both have to measure from the same instant,
+      // or the seconds between the mount and the answer are charged twice.
+      const now = vi.spyOn(performance, "now");
+      const onTtc = vi.fn();
+
+      now.mockReturnValue(1000);
+      render(<SliderHarness onTtc={onTtc} />);
+
+      now.mockReturnValue(1500);
+      pressKey("ArrowRight");
+      expect(onTtc).toHaveBeenCalledTimes(1);
+      expect(onTtc.mock.calls[0][0]["slider-element"]).toBe(500);
+
+      now.mockReturnValue(2000);
+      hideTab();
+
+      // 500 for mount-to-answer and 500 for answer-to-hide: the thousand units the element was on screen,
+      // billed once. Before the segment start was shared, the hide charged 1000 of its own and the total came
+      // to 1500.
+      expect(onTtc).toHaveBeenCalledTimes(2);
+      expect(onTtc.mock.calls[1][0]["slider-element"]).toBe(1000);
+
+      now.mockRestore();
+    });
+
+    test("keeps a tab switch on an untouched element billing from the mount", () => {
+      // The other half of the same contract: with no answer to move the segment on, a hide still pays for
+      // everything since the element appeared.
+      const now = vi.spyOn(performance, "now");
+      const onTtc = vi.fn();
+
+      now.mockReturnValue(1000);
+      render(<SliderHarness onTtc={onTtc} />);
+
+      now.mockReturnValue(1750);
+      hideTab();
+
+      expect(onTtc).toHaveBeenCalledTimes(1);
+      expect(onTtc.mock.calls[0][0]["slider-element"]).toBe(750);
+
+      now.mockRestore();
     });
   });
 

@@ -18,8 +18,10 @@ interface SliderSummaryProps {
  * buckets, so any bucketing policy would have to be invented here rather than derived from the
  * element's own configuration.
  *
- * The two decisions this card depends on - how the mean is printed, and where along the configured range it
- * sits - live in `../lib/sliderSummaryDisplay`, which is where they are also tested.
+ * The aggregation hands this card an unrounded mean, because a Slider's precision is whatever its author
+ * configured. The two decisions that follow from that - how many decimals the mean is printed with, derived
+ * from the element's own step and range, and where along the configured range it sits - live in
+ * `../lib/sliderSummaryDisplay`, which is where they are also tested.
  */
 export const SliderSummary = ({ elementSummary, survey }: SliderSummaryProps) => {
   const { t } = useTranslation();

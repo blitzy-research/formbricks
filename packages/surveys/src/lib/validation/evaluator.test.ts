@@ -733,6 +733,9 @@ describe("validateElementResponse", () => {
       // "at least 0" and "no greater than 100".
       expect(result.errors.map((error) => error.ruleId)).toEqual(["sliderValueType"]);
       expect(result.errors[0].message).toBe("errors.invalid_format");
+      // The category, not a rule: no rule ran, so naming one here would contradict the message above and
+      // misreport the cause in the API's error metadata.
+      expect(result.errors[0].ruleType).toBe("valueType");
     });
 
     test.each(wrongTypedValues)(

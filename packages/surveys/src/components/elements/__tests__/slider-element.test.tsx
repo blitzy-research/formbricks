@@ -529,23 +529,56 @@ describe("SliderElement", () => {
       expect(setTtc).toHaveBeenCalledTimes(1);
     });
 
-    test("holds the segment in a ref, leaving the tracking hook's registration untouched", () => {
-      // Writing the segment start as state would hand `useTtc` a new `startTime` on every answer, and its
-      // `visibilitychange` effect would tear down and re-register a listener that had not changed.
+    test("hands the tracking hook the same segment start it bills from", () => {
+      // `useTtc` bills `performance.now() - startTime` when the tab is hidden. If an answer advanced only
+      // this component's own ref, the hook would still be measuring from the mount, and a tab hidden after an
+      // answer would re-charge every instant that answer had already paid for.
       const setTtc = vi.fn();
       render(<SliderElement {...defaultProps} setTtc={setTtc} />);
-      const startTimeOnMount = mockUseTtc.mock.calls[0][3];
+      expect(mockUseTtc.mock.calls[0][3]).toBe(1000);
 
       vi.spyOn(performance, "now").mockReturnValue(1500);
       fireEvent.click(screen.getByTestId("select-fifty"));
+      expect(mockUseTtc.mock.calls[mockUseTtc.mock.calls.length - 1][3]).toBe(1500);
+
       vi.spyOn(performance, "now").mockReturnValue(1900);
       fireEvent.click(screen.getByTestId("select-max"));
+      expect(mockUseTtc.mock.calls[mockUseTtc.mock.calls.length - 1][3]).toBe(1900);
 
-      for (const call of mockUseTtc.mock.calls) {
-        expect(call[3]).toBe(startTimeOnMount);
-      }
-      // The billing still advances, which is what proves the ref - not the unchanged state - carries it.
+      // Each answer still pays for its own segment only.
       expect(mockGetUpdatedTtc.mock.calls.map((call) => call[2])).toEqual([500, 400]);
+    });
+
+    test("bills a tab switch after an answer only for the time since that answer", () => {
+      // The arithmetic the hook performs, reproduced against the start time it was actually handed: an answer
+      // at 1500 bills 500, and a hide at 2000 must bill the 500 since the answer - not the 1000 since mount.
+      const setTtc = vi.fn();
+      render(<SliderElement {...defaultProps} ttc={{} as TResponseTtc} setTtc={setTtc} />);
+
+      vi.spyOn(performance, "now").mockReturnValue(1500);
+      fireEvent.click(screen.getByTestId("select-fifty"));
+
+      const startTimeForHide = mockUseTtc.mock.calls[mockUseTtc.mock.calls.length - 1][3] as number;
+      const billedOnAnswer = mockGetUpdatedTtc.mock.calls[0][2] as number;
+      const billedOnHide = 2000 - startTimeForHide;
+
+      expect(billedOnAnswer).toBe(500);
+      expect(billedOnHide).toBe(500);
+      // The element was on screen for a thousand units in total, and that is what the two segments add up to.
+      expect(billedOnAnswer + billedOnHide).toBe(1000);
+    });
+
+    test("keeps billing from the ref when two answers land in the same tick", () => {
+      // The ref is authoritative because it is correct synchronously: two answers before the re-render must
+      // not both bill from the same start.
+      const setTtc = vi.fn();
+      render(<SliderElement {...defaultProps} ttc={{} as TResponseTtc} setTtc={setTtc} />);
+
+      vi.spyOn(performance, "now").mockReturnValue(1300);
+      fireEvent.click(screen.getByTestId("select-min"));
+      fireEvent.click(screen.getByTestId("select-fifty"));
+
+      expect(mockGetUpdatedTtc.mock.calls.map((call) => call[2])).toEqual([300, 0]);
     });
 
     test("starts a new segment at the instant the previous one closed", () => {

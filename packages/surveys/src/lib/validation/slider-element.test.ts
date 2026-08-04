@@ -98,7 +98,17 @@ describe("slider element acceptance criteria", () => {
     expect(elements.data[0].type).toBe(TSurveyElementTypeEnum.Slider);
   });
 
-  test("(b) a valid in-range, on-grid value of 50 validates and persists as a number", () => {
+  /**
+   * The engine half of acceptance criterion (b).
+   *
+   * What is provable here is that the value is accepted and that its numeric type satisfies the response-data
+   * contract - this package has no database and no ingress route, so storage is out of its reach. The write and
+   * read-back half is proven at the real boundary by
+   * `apps/web/app/api/v1/client/[environmentId]/responses/lib/slider-response-persistence.test.ts`, which
+   * drives `ZResponseInput`, `validateResponseData` and `createResponseWithQuotaEvaluation` unmocked and reads
+   * the row back through `ZResponse`.
+   */
+  test("(b) a valid in-range, on-grid value of 50 validates and keeps its numeric type", () => {
     const element = buildSliderElement();
 
     const result = validateElementResponse(element, 50, "en");
@@ -111,7 +121,8 @@ describe("slider element acceptance criteria", () => {
 
     expect(Object.keys(errorMap)).toHaveLength(0);
 
-    // "Persists as a number": the answer keeps its numeric type through the response-data contract.
+    // The answer keeps its numeric type through the response-data contract that the persisted column is typed
+    // by. That is a necessary condition for "persists as a number", not the whole of it - see the docblock.
     const responseData: TResponseData = { [SLIDER_ELEMENT_ID]: 50 };
 
     expect(typeof responseData[SLIDER_ELEMENT_ID]).toBe("number");
@@ -332,6 +343,7 @@ describe("slider answers of the wrong shape are rejected whether or not the elem
     // One mistake, one error: the shape check owns a wrongly typed answer outright, so neither the range
     // rules nor the grid rule - which also fail closed on a non-number - restate the same complaint.
     expect(result.errors.map((error) => error.ruleId)).toEqual(["sliderValueType"]);
+    expect(result.errors.map((error) => error.ruleType)).toEqual(["valueType"]);
     expect(result.errors[0].message).toBe("errors.invalid_format");
 
     // ...and through the shared block entrypoint every response route reaches, which is where a wrongly
@@ -525,6 +537,8 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
     const single = validateElementResponse(malformed, 0, "en");
     expect(single.valid).toBe(false);
     expect(single.errors.map((error) => error.ruleId)).toEqual(["sliderConfiguration"]);
+    // The element's definition is what failed, so the category names that rather than a rule that never ran.
+    expect(single.errors.map((error) => error.ruleType)).toEqual(["elementConfiguration"]);
     expect(single.errors[0].message).toBe("errors.invalid_format");
 
     const errorMap = validateBlockResponses([malformed], { [SLIDER_ELEMENT_ID]: 0 }, "en");

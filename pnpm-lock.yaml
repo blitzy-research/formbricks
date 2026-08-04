@@ -950,6 +950,12 @@ importers:
       '@tailwindcss/vite':
         specifier: 4.1.17
         version: 4.1.17(vite@6.4.1(@types/node@22.15.18)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.39.1)(tsx@4.19.4)(yaml@2.8.2))
+      '@testing-library/jest-dom':
+        specifier: 6.6.3
+        version: 6.6.3
+      '@testing-library/react':
+        specifier: 16.3.0
+        version: 16.3.0(@testing-library/dom@8.20.1)(@types/react-dom@19.2.1(@types/react@19.2.1))(@types/react@19.2.1)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
       '@types/react':
         specifier: 19.2.1
         version: 19.2.1
@@ -18243,6 +18249,16 @@ snapshots:
     dependencies:
       '@testing-library/dom': 8.20.1
       preact: 10.28.2
+
+  '@testing-library/react@16.3.0(@testing-library/dom@8.20.1)(@types/react-dom@19.2.1(@types/react@19.2.1))(@types/react@19.2.1)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)':
+    dependencies:
+      '@babel/runtime': 7.28.4
+      '@testing-library/dom': 8.20.1
+      react: 19.2.1
+      react-dom: 19.2.1(react@19.2.1)
+    optionalDependencies:
+      '@types/react': 19.2.1
+      '@types/react-dom': 19.2.1(@types/react@19.2.1)
 
   '@testing-library/react@16.3.0(@testing-library/dom@8.20.1)(@types/react-dom@19.2.1(@types/react@19.2.1))(@types/react@19.2.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
     dependencies:

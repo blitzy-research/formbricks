@@ -155,6 +155,9 @@ describe("validateResponseData with the real slider evaluator", () => {
 
       expect(errorMap?.[SLIDER_ID]).toHaveLength(1);
       expect(errorMap?.[SLIDER_ID][0].ruleId).toBe("sliderValueType");
+      // The refusal is structural, so it is reported as the category that decided it rather than borrowing the
+      // name of a grid rule that never ran.
+      expect(errorMap?.[SLIDER_ID][0].ruleType).toBe("valueType");
       expect(errorMap?.[SLIDER_ID][0].message).toBe("Please enter a valid format");
     });
   });
@@ -246,6 +249,43 @@ describe("validateResponseData with the real slider evaluator", () => {
             elementId: SLIDER_ID,
             ruleId: "__implicit_slider_max__",
             ruleType: "maxValue",
+          },
+        },
+      ]);
+    });
+
+    test("reports a structural refusal as a category rather than as a rule", () => {
+      // A value of the wrong type is refused before any rule runs, so the metadata a caller receives must not
+      // name one: `ruleType` carries the category that decided it, and it agrees with the message beside it.
+      const errorMap = validateResponseData(buildBlocks(), { [SLIDER_ID]: "50" } as TResponseData);
+      if (!errorMap) throw new Error("expected the numeric string to be rejected");
+
+      expect(formatValidationErrorsForV2Api(errorMap)).toEqual([
+        {
+          field: `response.data.${SLIDER_ID}`,
+          issue: "Please enter a valid format",
+          meta: {
+            elementId: SLIDER_ID,
+            ruleId: "sliderValueType",
+            ruleType: "valueType",
+          },
+        },
+      ]);
+    });
+
+    test("reports an untrustworthy element definition as its own category", () => {
+      const malformed = buildSliderElement({ range: { min: 100, max: 0 } } as Partial<TSurveySliderElement>);
+      const errorMap = validateResponseData(buildBlocks(malformed), { [SLIDER_ID]: 50 } as TResponseData);
+      if (!errorMap) throw new Error("expected the malformed configuration to be rejected");
+
+      expect(formatValidationErrorsForV2Api(errorMap)).toEqual([
+        {
+          field: `response.data.${SLIDER_ID}`,
+          issue: "Please enter a valid format",
+          meta: {
+            elementId: SLIDER_ID,
+            ruleId: "sliderConfiguration",
+            ruleType: "elementConfiguration",
           },
         },
       ]);

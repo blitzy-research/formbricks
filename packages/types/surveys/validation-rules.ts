@@ -336,10 +336,33 @@ export type TValidationRulesForFileUpload = TValidationRulesForElementType<typeo
 export type TValidationRulesForAddress = TValidationRulesForElementType<typeof ADDRESS_RULES>;
 export type TValidationRulesForContactInfo = TValidationRulesForElementType<typeof CONTACT_INFO_RULES>;
 
+/**
+ * Categories for validation errors that are not the outcome of a validation RULE.
+ *
+ * Some answers are refused before any rule is reached, because the response itself does not meet the
+ * element's structural contract: the value is of a type the element never accepts, or the element's own
+ * configuration cannot be trusted to judge it. Those verdicts are still validation errors - they reach a
+ * respondent and an API caller through exactly the same channel - but describing them with a rule type would
+ * misattribute them to a rule that did not run and, in the API's error metadata, contradict the message
+ * beside it.
+ *
+ * - `valueType` - the submitted value is not of the type this element's answer contract admits.
+ * - `elementConfiguration` - the element's own definition is incomplete or contradictory, so no answer to it
+ *   can be validated; the answer is refused rather than accepted unchecked.
+ */
+export const VALIDATION_STRUCTURAL_ERROR_TYPES = ["valueType", "elementConfiguration"] as const;
+
+export type TValidationStructuralErrorType = (typeof VALIDATION_STRUCTURAL_ERROR_TYPES)[number];
+
+/**
+ * What an error was decided by: the rule that rejected the value, or the structural category that did.
+ */
+export type TValidationErrorType = TValidationRuleType | TValidationStructuralErrorType;
+
 // Validation error returned by evaluator
 export interface TValidationError {
   ruleId: string;
-  ruleType: TValidationRuleType;
+  ruleType: TValidationErrorType;
   message: string;
 }
 

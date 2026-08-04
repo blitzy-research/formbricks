@@ -11,17 +11,45 @@ import { TSurveyElementSummarySlider } from "@formbricks/types/surveys/types";
  * functions only present a mean the aggregation has already computed.
  */
 
-// Decimals the mean is printed with. Two is what every averaged card in this folder shows - the rating,
-// opinion-scale and payment cards all print `toFixed(2)` - and it is also all the precision there is to show:
-// `getElementSummary` rounds the Slider mean through the same shared two-decimal helper before it reaches here.
-const DISPLAY_DECIMALS = 2;
+// Decimals a mean is printed with at minimum. Two is what every averaged card in this folder shows - the
+// rating, opinion-scale and payment cards all print `toFixed(2)` - so an ordinary Slider reads exactly like
+// the cards beside it.
+const MINIMUM_DISPLAY_DECIMALS = 2;
+
+// Decimals allowed beyond the grid's own precision. The mean of several answers on a grid of `step` is a
+// multiple of `step / count`, so it is routinely finer than any single selectable value; two extra places
+// show that a mean sits between two grid points without turning the figure into a wall of digits.
+const DISPLAY_DECIMALS_BEYOND_GRID = 2;
+
+// Ceiling imposed by `toFixed`, which accepts at most 100 fraction digits and is only meaningful while the
+// figure it produces still round-trips. Beyond this the mean is printed in exponential notation instead.
+const MAXIMUM_DISPLAY_DECIMALS = 20;
 
 // The placeholder this folder already uses for a figure that is unavailable (see SummaryMetadata).
 const UNAVAILABLE_AVERAGE_TEXT = "-";
 
+/**
+ * Decimal places a number needs, including the magnitudes JavaScript prints in exponential notation.
+ *
+ * `String(1e-7)` is `"1e-7"`, which carries no decimal point even though the value needs seven places, so
+ * reading the fraction alone would understate every such bound.
+ */
+const decimalPlaces = (input: number): number => {
+  if (!Number.isFinite(input)) return 0;
+
+  const [mantissa, exponent] = String(Math.abs(input)).split("e");
+  const fraction = mantissa.split(".")[1] ?? "";
+  if (!exponent) return fraction.length;
+
+  return Math.max(fraction.length - Number(exponent), 0);
+};
+
 /** What the card needs in order to render the average row and its bar. */
 export interface TSliderSummaryDisplay {
-  /** The mean at its display precision, or the placeholder for an unavailable figure. */
+  /**
+   * The mean at the precision this element's own grid calls for, or the placeholder for an unavailable
+   * figure.
+   */
   averageText: string;
   /**
    * Where the mean sits within the configured range, as a fraction measured from the minimum.
@@ -61,21 +89,59 @@ export const getPositionWithinRange = (value: number, min: number, max: number):
 };
 
 /**
+ * Decimals to print a mean of this element's answers with.
+ *
+ * Derived from the element's own configuration rather than fixed, because a Slider's precision is whatever its
+ * author chose: a range of 0 to 0.001 in steps of 0.0001 has no figure to show at two decimals, and would read
+ * as `0.00` for every possible answer. The grid's precision is the wider of what its bounds and its step need,
+ * and the mean is allowed a couple of places beyond that. An ordinary whole-number range resolves to exactly
+ * the two decimals the sibling cards print.
+ */
+const getDisplayDecimals = (min: number, max: number, step: number): number => {
+  const gridPrecision = Math.max(decimalPlaces(min), decimalPlaces(max), decimalPlaces(step));
+
+  return Math.min(
+    Math.max(gridPrecision + DISPLAY_DECIMALS_BEYOND_GRID, MINIMUM_DISPLAY_DECIMALS),
+    MAXIMUM_DISPLAY_DECIMALS
+  );
+};
+
+/**
+ * Prints a finite mean at the precision its element's configuration calls for.
+ *
+ * `toFixed` already switches to exponential notation above 1e21, which is what keeps an extreme mean a readable
+ * figure instead of 300 characters of digits. The explicit fallback covers the other end: a grid finer than a
+ * fixed-point form can express would print a real mean as `0.00000000000000000000`, and reporting a mean of
+ * zero for answers that were not zero is exactly the loss this function exists to avoid.
+ */
+const formatAverage = (average: number, min: number, max: number, step: number): string => {
+  const fixed = average.toFixed(getDisplayDecimals(min, max, step));
+
+  if (average !== 0 && Number(fixed) === 0) {
+    return average.toExponential();
+  }
+
+  return fixed;
+};
+
+/**
  * Resolves the average text and the bar position for one Slider summary.
  *
- * The aggregation always emits a finite average, so the non-finite fallback only guards a summary read back from
- * an older cache or assembled by hand; without it the card would print the literal `Infinity` while the bar
- * silently clamped itself to full.
+ * The aggregation publishes the mean unrounded, so both decisions here are taken from the figure the
+ * arithmetic actually produced. It always emits a finite average, so the non-finite fallback only guards a
+ * summary read back from an older cache or assembled by hand; without it the card would print the literal
+ * `Infinity` while the bar silently clamped itself to full.
  */
 export const getSliderSummaryDisplay = (
   elementSummary: TSurveyElementSummarySlider
 ): TSliderSummaryDisplay => {
   const { min, max } = elementSummary.element.range;
+  const { step } = elementSummary.element;
   const { average } = elementSummary;
   const hasFiniteAverage = Number.isFinite(average);
 
   return {
-    averageText: hasFiniteAverage ? average.toFixed(DISPLAY_DECIMALS) : UNAVAILABLE_AVERAGE_TEXT,
+    averageText: hasFiniteAverage ? formatAverage(average, min, max, step) : UNAVAILABLE_AVERAGE_TEXT,
     normalized: hasFiniteAverage ? getPositionWithinRange(average, min, max) : 0,
   };
 };

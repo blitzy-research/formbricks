@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { Slider } from "../slider";
 
 /**
@@ -33,6 +33,44 @@ const defaultProps = {
 
 /** The primitive puts `role="slider"` on its thumb, which is the element that carries the value. */
 const getThumb = (): HTMLElement => screen.getByRole("slider");
+
+/**
+ * Whether `value` is exactly a point of the grid `min + n * step`.
+ *
+ * Deliberately independent of the component: the arithmetic below is the one the shared `stepMultipleOf`
+ * response rule performs, which is the rule that decides whether a submitted answer is valid. Every operand
+ * is restated as an exact decimal - taken, as the rule takes it, from the shortest string that round-trips
+ * back to the same double - and the remainder is computed over BigInts, so neither a decimal step nor a
+ * magnitude past the 53-bit mark can make the answer approximate. No tolerance is allowed here at all: the
+ * rule forgives a couple of units in the last place, and asserting the stricter property is what proves the
+ * control is not living inside that allowance.
+ */
+const isOnGrid = (value: number, min: number, step: number): boolean => {
+  const toExactDecimal = (input: number): { digits: bigint; scale: number } => {
+    const {
+      sign = "",
+      whole = "0",
+      fraction = "",
+      exponent = "0",
+    } = /^(?<sign>-?)(?<whole>\d+)(?:\.(?<fraction>\d+))?(?:e(?<exponent>[+-]?\d+))?$/i.exec(String(input))
+      ?.groups ?? {};
+    let digits = BigInt(whole + fraction);
+    let scale = fraction.length - Number(exponent);
+    if (scale < 0) {
+      digits *= 10n ** BigInt(-scale);
+      scale = 0;
+    }
+    return { digits: sign === "-" ? -digits : digits, scale };
+  };
+
+  const parts = [value, min, step].map(toExactDecimal);
+  const scale = Math.max(...parts.map((part) => part.scale));
+  const [scaledValue, scaledMin, scaledStep] = parts.map(
+    (part) => part.digits * 10n ** BigInt(scale - part.scale)
+  );
+
+  return scaledStep > 0n && (scaledValue - scaledMin) % scaledStep === 0n;
+};
 
 /** Locates one of the composition slots, failing loudly rather than asserting a missing element away. */
 const getSlot = (container: HTMLElement, slot: string): HTMLElement => {
@@ -70,6 +108,13 @@ const pressRoot = (container: HTMLElement, button = 0): void => {
   fireEvent.pointerUp(root, { button, pointerId: 1 });
 };
 
+/**
+ * The pointer-capture methods this environment provides, captured once so `restoreGeometry` can put back
+ * exactly what was there - including the absence of a method, which `undefined` records faithfully.
+ */
+const POINTER_CAPTURE_METHODS = ["setPointerCapture", "hasPointerCapture", "releasePointerCapture"] as const;
+const originalPointerCapture: Record<string, unknown> = {};
+
 /** Gives the primitive a measurable track and a working pointer-capture implementation. */
 const stubGeometry = (container: HTMLElement, width = 100): void => {
   const root = getSlot(container, "slider");
@@ -86,7 +131,17 @@ const stubGeometry = (container: HTMLElement, width = 100): void => {
       toJSON: () => ({}),
     }) as DOMRect;
 
+  // Patched on the prototype because the primitive captures on whichever node the press landed on, which
+  // this helper does not know. Recorded first so `restoreGeometry` leaves the environment as it found it -
+  // a prototype these specs mutated permanently would make every later suite in the same file depend on
+  // whether this one had run.
   const proto = window.HTMLElement.prototype as unknown as Record<string, unknown>;
+  for (const method of POINTER_CAPTURE_METHODS) {
+    if (!(method in originalPointerCapture)) {
+      originalPointerCapture[method] = proto[method];
+    }
+  }
+
   proto.setPointerCapture = function setPointerCapture(this: Record<string, unknown>): void {
     this.__captured = true;
   };
@@ -98,26 +153,47 @@ const stubGeometry = (container: HTMLElement, width = 100): void => {
   };
 };
 
+/** Undoes `stubGeometry`'s prototype patches. A no-op when no spec in the run stubbed anything. */
+const restoreGeometry = (): void => {
+  const proto = window.HTMLElement.prototype as unknown as Record<string, unknown>;
+  for (const method of POINTER_CAPTURE_METHODS) {
+    if (!(method in originalPointerCapture)) continue;
+
+    const original = originalPointerCapture[method];
+    if (original === undefined) {
+      Reflect.deleteProperty(proto, method);
+    } else {
+      proto[method] = original;
+    }
+    Reflect.deleteProperty(originalPointerCapture, method);
+  }
+};
+
 /**
  * Drags across the track, reporting every intermediate position the way a pointer does.
  *
  * Positions are given in pixels along a 100px track, so they read as percentages of the configured range.
+ * The button defaults to the primary one, which is the only press that expresses a selection.
  */
-const drag = (container: HTMLElement, positions: number[]): void => {
+const drag = (container: HTMLElement, positions: number[], button = 0): void => {
   stubGeometry(container);
   const root = getSlot(container, "slider");
   const [first, ...rest] = positions;
 
-  fireEvent.pointerDown(root, { button: 0, pointerId: 1, clientX: first });
+  fireEvent.pointerDown(root, { button, pointerId: 1, clientX: first });
   for (const position of rest) {
     fireEvent.pointerMove(root, { pointerId: 1, clientX: position });
   }
-  fireEvent.pointerUp(root, { button: 0, pointerId: 1, clientX: positions[positions.length - 1] });
+  fireEvent.pointerUp(root, { button, pointerId: 1, clientX: positions[positions.length - 1] });
 };
 
 describe("Slider", () => {
   beforeEach(() => {
     defaultProps.onChange = vi.fn<(value: number) => void>();
+  });
+
+  afterEach(() => {
+    restoreGeometry();
   });
 
   // -------------------------------------------------------------------------
@@ -134,13 +210,19 @@ describe("Slider", () => {
     test("renders the headline", () => {
       render(<Slider {...defaultProps} />);
 
-      expect(screen.getByText("How satisfied are you?")).toBeInTheDocument();
+      // The visible copy specifically: the control also carries a hidden one, which is what names the
+      // handle for assistive technology and is asserted in the accessibility group below.
+      expect(
+        screen.getByText("How satisfied are you?", { selector: '[data-variant="headline"]' })
+      ).toBeInTheDocument();
     });
 
     test("renders the description when provided", () => {
       render(<Slider {...defaultProps} description="Pick a number" />);
 
-      expect(screen.getByText("Pick a number")).toBeInTheDocument();
+      expect(
+        screen.getByText("Pick a number", { selector: '[data-variant="description"]' })
+      ).toBeInTheDocument();
     });
 
     test("does not render a description when none is provided", () => {
@@ -342,6 +424,110 @@ describe("Slider", () => {
 
       expect(getThumb()).toHaveAttribute("aria-valuenow", "100");
     });
+
+    test("reads the value out in the element's own numbers, not as a position on a scale", () => {
+      render(<Slider {...defaultProps} min={10} max={50} step={5} value={30} />);
+
+      expect(getThumb()).toHaveAttribute("aria-valuetext", "30");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The grid, at magnitudes and precisions where approximation breaks down
+  //
+  // Every value here has to be a point of `min + n * step`, because that is the set the shared response rule
+  // accepts. A control that reports anything else persists an answer the respondent did not choose - and one
+  // the server then rejects.
+  // -------------------------------------------------------------------------
+
+  describe("the grid holds at every magnitude the schema admits", () => {
+    test("selects the maximum of a range far too wide for a relative tolerance", () => {
+      // A billion steps. Counting them by division needs a tolerance for binary-fraction noise, and any
+      // tolerance proportional to the count is a whole step by the time it reaches this end of the range:
+      // End resolved to 999,999,999 - a valid, on-grid, silently wrong answer.
+      render(<Slider {...defaultProps} min={0} max={1_000_000_000} step={1} />);
+
+      pressKey("End");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(1_000_000_000);
+    });
+
+    test("steps by one at the top of a range a billion steps wide", () => {
+      render(<Slider {...defaultProps} min={0} max={1_000_000_000} step={1} value={999_999_999} />);
+
+      pressKey("ArrowRight");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(1_000_000_000);
+    });
+
+    test("selects a grid point on a step too fine for the primitive to round to", () => {
+      // `1e-7` prints without a decimal point, so reading its precision from its printed form gives zero
+      // places - which would round every position on this grid to a whole number.
+      render(<Slider {...defaultProps} min={0} max={1} step={1e-7} />);
+
+      pressKey("ArrowRight");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(1e-7);
+    });
+
+    test("reaches the maximum of a grid a step too fine to round would collapse", () => {
+      render(<Slider {...defaultProps} min={0} max={1} step={1e-7} />);
+
+      pressKey("End");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(1);
+    });
+
+    test("keeps a fine grid anchored on a large origin", () => {
+      render(<Slider {...defaultProps} min={1_000_000} max={1_000_001} step={1e-7} />);
+
+      pressKey("ArrowRight");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(1_000_000.0000001);
+    });
+
+    test("stays inside the double range at magnitudes where one more step would leave it", () => {
+      // The reconstruction of the second point of this grid is not a finite number, so the grid has exactly
+      // one point and the control reports that rather than an Infinity.
+      render(<Slider {...defaultProps} min={1.7e308} max={1.79e308} step={1e307} />);
+
+      pressKey("End");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(1.7e308);
+      expect(Number.isFinite(defaultProps.onChange.mock.calls[0][0])).toBe(true);
+    });
+
+    test.each([
+      ["a whole grid", { min: 0, max: 100, step: 5 }],
+      ["a decimal grid", { min: 0, max: 1, step: 0.1 }],
+      ["an origin finer than the step", { min: 10.5, max: 20.5, step: 1 }],
+      ["a grid whose last point overshoots the maximum", { min: 0, max: 10, step: 3 }],
+      ["a grid spanning zero", { min: -50, max: 50, step: 0.5 }],
+      ["a step finer than the primitive can round", { min: 0, max: 1, step: 1e-7 }],
+      ["a fine grid on a large origin", { min: 1_000_000, max: 1_000_001, step: 1e-7 }],
+      ["a range a billion steps wide", { min: 0, max: 1_000_000_000, step: 1 }],
+    ] as [string, { min: number; max: number; step: number }][])(
+      "reports only points of %s",
+      (_label, config) => {
+        const { container, unmount } = render(<Slider {...defaultProps} {...config} />);
+        stubGeometry(container);
+
+        // Every key that moves the handle, from both ends of the range, so the assertion covers the
+        // positions an interaction can actually resolve to rather than one sample.
+        for (const key of ["End", "Home", "ArrowRight", "PageUp", "ArrowLeft", "PageDown"]) {
+          pressKey(key);
+        }
+        unmount();
+
+        expect(defaultProps.onChange.mock.calls.length).toBeGreaterThan(0);
+        for (const [reported] of defaultProps.onChange.mock.calls) {
+          expect(Number.isFinite(reported)).toBe(true);
+          expect(reported).toBeGreaterThanOrEqual(config.min);
+          expect(reported).toBeLessThanOrEqual(config.max);
+          expect(isOnGrid(reported, config.min, config.step)).toBe(true);
+        }
+      }
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -483,6 +669,168 @@ describe("Slider", () => {
       drag(container, [40, 70, 40]);
 
       expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Abandoned interactions
+  //
+  // A drag that is cancelled rather than released - the browser taking the pointer away, a gesture the
+  // system claims - expresses no selection at all. What the respondent sees must go back to the answer that
+  // is actually recorded, or the handle and the readout claim an answer that was never sent.
+  // -------------------------------------------------------------------------
+
+  describe("a cancelled interaction", () => {
+    /** Drags without releasing, then lets the pointer be taken away. */
+    const dragAndCancel = (container: HTMLElement, positions: number[]): void => {
+      stubGeometry(container);
+      const root = getSlot(container, "slider");
+      const [first, ...rest] = positions;
+
+      fireEvent.pointerDown(root, { button: 0, pointerId: 1, clientX: first });
+      for (const position of rest) {
+        fireEvent.pointerMove(root, { pointerId: 1, clientX: position });
+      }
+      fireEvent.pointerCancel(root, { pointerId: 1 });
+    };
+
+    test("records nothing", () => {
+      const { container } = render(<Slider {...defaultProps} value={40} />);
+
+      dragAndCancel(container, [40, 75]);
+
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+
+    test("returns the handle to the recorded answer", () => {
+      const { container } = render(<Slider {...defaultProps} value={40} />);
+
+      dragAndCancel(container, [40, 75]);
+
+      expect(getThumb()).toHaveAttribute("aria-valuenow", "40");
+    });
+
+    test("returns the readout to the recorded answer", () => {
+      const { container } = render(<Slider {...defaultProps} value={40} />);
+
+      dragAndCancel(container, [40, 75]);
+
+      expect(container.querySelector("output")).toHaveTextContent("40");
+    });
+
+    test("returns an untouched control to showing no answer at all", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+
+      dragAndCancel(container, [30, 75]);
+
+      expect(container.querySelector("output")).not.toBeInTheDocument();
+      expect(getThumb().className).toContain("bg-input-bg");
+      expect(getThumb()).toHaveAttribute("aria-valuenow", "0");
+    });
+
+    test("leaves the control usable afterwards", () => {
+      const { container } = render(<Slider {...defaultProps} value={40} />);
+
+      dragAndCancel(container, [40, 75]);
+      pressKey("ArrowRight");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(45);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Presses the control does not act on
+  //
+  // Only a primary press is a selection. The primitive itself acts on every press it sees, so a secondary
+  // one has to be refused before it reaches the primitive rather than merely left unrecorded.
+  // -------------------------------------------------------------------------
+
+  describe("non-primary presses", () => {
+    test.each([
+      ["secondary", 2],
+      ["middle", 1],
+    ] as [string, number][])("records nothing for a %s press on the track", (_label, button) => {
+      const { container } = render(<Slider {...defaultProps} />);
+
+      drag(container, [70], button);
+
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ["secondary", 2],
+      ["middle", 1],
+    ] as [string, number][])("does not move the handle for a %s press on the track", (_label, button) => {
+      const { container } = render(<Slider {...defaultProps} value={20} />);
+
+      drag(container, [70], button);
+
+      expect(getThumb()).toHaveAttribute("aria-valuenow", "20");
+    });
+
+    test("still answers a primary press after a secondary one was refused", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+
+      drag(container, [70], 2);
+      drag(container, [70], 0);
+
+      expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
+      expect(defaultProps.onChange).toHaveBeenCalledWith(70);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Correcting a stored value the presentation cannot show
+  //
+  // A value outside the range, or off the grid, has no position on the track, so the handle is drawn at the
+  // nearest point it does have. The respondent has to be able to accept that position - otherwise the
+  // question shows an invalid answer that no interaction can replace.
+  // -------------------------------------------------------------------------
+
+  describe("recovering from a value the control cannot show", () => {
+    test("records the bound the handle was held at when that end of the track is pressed", () => {
+      const { container } = render(<Slider {...defaultProps} value={140} />);
+
+      // A press at the far end of the track, where the handle is already being held. The primitive reports
+      // nothing for it, because the tick it resolves to is the tick it already holds.
+      drag(container, [100]);
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(100);
+    });
+
+    test("records the bound the handle was held at when the handle itself is pressed", () => {
+      render(<Slider {...defaultProps} value={140} />);
+
+      pressThumb();
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(100);
+    });
+
+    test("records the bound the handle was held at when a key resolves to it", () => {
+      render(<Slider {...defaultProps} value={-20} />);
+
+      pressKey("Home");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(0);
+    });
+
+    test("records the nearest grid point for a stored value that sits between two", () => {
+      render(<Slider {...defaultProps} value={7} />);
+
+      pressThumb();
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(5);
+    });
+
+    test("records nothing when the stored value is the one being shown", () => {
+      render(<Slider {...defaultProps} value={45} />);
+
+      pressThumb();
+      pressKey("Home");
+      pressKey("ArrowRight");
+
+      // Home moves to 0 and the arrow back to 5; the press on the value already held records nothing.
+      expect(defaultProps.onChange.mock.calls.map((call) => call[0])).toEqual([0, 5]);
     });
   });
 
@@ -997,12 +1345,15 @@ describe("Slider", () => {
       );
     });
 
-    test("carries the required state on the root, not on the thumb", () => {
-      // ARIA does not define a required state for the `slider` role, so it stays off the thumb.
+    test("claims no required state on a node that cannot express one", () => {
+      // ARIA defines no required state for the `slider` role, so it belongs on neither the handle that
+      // carries that role nor the composition root, which carries no role at all: on either it would be an
+      // attribute nothing reads. The description above is what actually announces it.
       const { container } = render(<Slider {...defaultProps} required />);
 
-      expect(getSlot(container, "slider")).toHaveAttribute("aria-required", "true");
+      expect(getSlot(container, "slider")).not.toHaveAttribute("aria-required");
       expect(getThumb()).not.toHaveAttribute("aria-required");
+      expect(getThumb()).toHaveAccessibleDescription("Required");
     });
   });
 
@@ -1014,13 +1365,46 @@ describe("Slider", () => {
     test("names the thumb with the headline", () => {
       render(<Slider {...defaultProps} />);
 
-      expect(getThumb()).toHaveAttribute("aria-label", "How satisfied are you?");
+      expect(getThumb()).toHaveAccessibleName("How satisfied are you?");
     });
 
-    test("associates the header label with the control id", () => {
+    test("names the thumb with the words of a headline written in a rich editor, not its markup", () => {
+      render(<Slider {...defaultProps} headline="<p>How <strong>satisfied</strong> are you?</p>" />);
+
+      expect(getThumb()).toHaveAccessibleName("How satisfied are you?");
+    });
+
+    test("describes the thumb with the description", () => {
+      render(<Slider {...defaultProps} description="Pick a number" />);
+
+      expect(getThumb()).toHaveAccessibleDescription("Pick a number");
+    });
+
+    test("describes the thumb with the description, the required state and the error in reading order", () => {
+      render(
+        <Slider {...defaultProps} description="Pick a number" required errorMessage="Please select a value" />
+      );
+
+      expect(getThumb()).toHaveAccessibleDescription("Pick a number Required Please select a value");
+    });
+
+    test("keeps the name and description sources out of the reading order", () => {
+      // They repeat the header, which is already read; a node referenced by id still supplies its text.
+      const { container } = render(<Slider {...defaultProps} description="Pick a number" />);
+
+      expect(container.querySelector("#test-slider-input-label")).toHaveAttribute("aria-hidden", "true");
+      expect(container.querySelector("#test-slider-input-description")).toHaveAttribute(
+        "aria-hidden",
+        "true"
+      );
+    });
+
+    test("does not label the composition root, which a label cannot be associated with", () => {
+      // `role="slider"` is on the thumb, and the root is a `span`: a `label[for]` pointing at it resolves to
+      // nothing. The id stays, because the value readout's `for` may reference any element.
       const { container } = render(<Slider {...defaultProps} />);
 
-      expect(container.querySelector('label[for="test-slider-input"]')).toBeInTheDocument();
+      expect(container.querySelector('label[for="test-slider-input"]')).not.toBeInTheDocument();
       expect(getSlot(container, "slider")).toHaveAttribute("id", "test-slider-input");
     });
 
