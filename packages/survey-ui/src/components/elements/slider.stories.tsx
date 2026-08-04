@@ -38,17 +38,23 @@ const meta: Meta<StoryProps> = {
     ...commonArgTypes,
     min: {
       control: { type: "number" },
-      description: "Lower bound of the selectable range",
+      description:
+        "Lower bound of the selectable range, and the base the step grid is measured from. Must be less than `max`",
       table: { category: "Content" },
     },
     max: {
       control: { type: "number" },
-      description: "Upper bound of the selectable range",
+      description: "Upper bound of the selectable range. Must be greater than `min`",
       table: { category: "Content" },
     },
     step: {
-      control: { type: "number", min: 0 },
-      description: "Increment between selectable values",
+      // Floored above zero so the playground cannot offer a step the schema
+      // rejects. The schema stays authoritative: it accepts finer increments
+      // than this stepper reaches, which the description states rather than
+      // letting the floor read as a limit.
+      control: { type: "number", min: 0.1, step: 0.1 },
+      description:
+        "Increment between selectable values, measured from `min`, so the selectable values are `min + n * step`. Must be greater than `0` and no wider than `max - min`; the schema rejects a zero, negative or oversized step. Fractional increments such as `0.5` are supported - the `0.1` floor here is this control's granularity, not the schema's limit",
       table: { category: "Content" },
     },
     value: {

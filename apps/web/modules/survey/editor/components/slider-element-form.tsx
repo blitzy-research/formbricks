@@ -2,12 +2,24 @@
 
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { PlusIcon } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TSurveySliderElement } from "@formbricks/types/surveys/elements";
 import { TSurvey } from "@formbricks/types/surveys/types";
 import { TUserLocale } from "@formbricks/types/user";
-import { createI18nString, extractLanguageCodes } from "@/lib/i18n/utils";
+import { extractLanguageCodes } from "@/lib/i18n/utils";
 import { ElementFormInput } from "@/modules/survey/components/element-form-input";
+import {
+  type TSliderNumericDrafts,
+  type TSliderNumericField,
+  buildSliderDescriptionUpdate,
+  buildSliderNumericUpdate,
+  clearSliderNumericDraft,
+  getSliderFieldIds,
+  getSliderNumericFieldText,
+  isSliderValueShown,
+  recordSliderNumericDraft,
+} from "@/modules/survey/editor/components/slider-element-form-utils";
 import { AdvancedOptionToggle } from "@/modules/ui/components/advanced-option-toggle";
 import { Button } from "@/modules/ui/components/button";
 import { Input } from "@/modules/ui/components/input";
@@ -26,31 +38,6 @@ interface SliderElementFormProps {
   isExternalUrlsAllowed?: boolean;
 }
 
-/**
- * Reads a numeric editor field, returning the value only when the WHOLE field is a finite number.
- *
- * The conversion is applied to the entire trimmed field rather than scanned from its start, because a
- * scanning parse (`Number.parseFloat`) stops at the first character it cannot use and keeps what came
- * before it: "1e" becomes 1 and "12abc" becomes 12, writing a number the author never typed. An empty or
- * blank field is declined explicitly, since converting it would yield `0` and silently rewrite a cleared
- * bound to zero. A decimal such as `0.5` and a complete exponent such as `1e3` are both whole numbers and
- * are accepted; `parseInt` would truncate the former to a non-positive step the schema rejects.
- *
- * `null` tells the caller not to write, leaving the value already stored on the element in place.
- */
-const readFiniteNumber = (rawValue: string): number | null => {
-  const trimmed = rawValue.trim();
-  if (trimmed === "") {
-    return null;
-  }
-
-  const parsed = Number(trimmed);
-  return Number.isFinite(parsed) ? parsed : null;
-};
-
-/** The three numeric fields the panel writes. */
-type NumericField = "min" | "max" | "step";
-
 export const SliderElementForm = ({
   element,
   elementIdx,
@@ -67,35 +54,45 @@ export const SliderElementForm = ({
   const surveyLanguageCodes = extractLanguageCodes(localSurvey.languages);
   const [parent] = useAutoAnimate();
 
-  // DOM ids for the three numeric fields, scoped to the element so several slider cards can be open at
-  // once. A survey may hold any number of sliders, and a document-wide id such as "rangeMin" would repeat
-  // on every card: the browser resolves a duplicate id to the FIRST match, so a later card's label would
-  // focus - and a screen reader would announce - the first card's input. `element.id` is unique per element
-  // within a survey, which is why the show-value toggle below already scopes its own id the same way.
-  const rangeMinId = `${element.id}-range-min`;
-  const rangeMaxId = `${element.id}-range-max`;
-  const stepId = `${element.id}-step`;
+  // Element-scoped DOM ids, so several slider cards can be open at once without any of them colliding.
+  const { rangeMinId, rangeMaxId, stepId, showValueId } = getSliderFieldIds(element.id);
 
-  // Writes a numeric field straight to the element, holding no copy of the field in the component: each
-  // input renders the number the element itself stores and every keystroke that completes a number is
-  // written back, which is the pattern the payment panel's amount field establishes. A keystroke that does
-  // not complete a number is simply not written, so the element never receives `NaN` and the value already
-  // stored stays in place - and nothing is lost on screen by declining it, because a `type="number"` field
-  // reports an incomplete number as an empty string rather than as the characters typed so far.
-  const handleNumericChange = (field: NumericField, rawValue: string) => {
-    const parsed = readFiniteNumber(rawValue);
-    if (parsed === null) {
+  // What is currently being typed, for the fields being typed into. Local state is what makes an entry that
+  // is not yet a number survive on screen: a `type="number"` field reports an incomplete entry - a lone "-",
+  // a cleared field, a half-written exponent - as an empty string, and a field rendered straight from the
+  // element would then be handed back the stored number by React's controlled-input restoration on the very
+  // next keystroke. That rewrite is what makes a negative bound unauthorable and a field impossible to clear
+  // before retyping, since the author never gets past the first character. Mirroring what the field reports
+  // keeps the rendered value equal to the DOM's own, so the characters stay put until the entry is finished.
+  const [numericDrafts, setNumericDrafts] = useState<TSliderNumericDrafts>({});
+
+  // Every keystroke is held as a draft, and written through only once the whole field reads as a finite
+  // number, so the element never receives `NaN` or a partially typed value and the live preview still follows
+  // the author keystroke by keystroke rather than waiting for them to leave the field. The write itself is
+  // `buildSliderNumericUpdate`, which merges a bound into the element's existing range so editing one bound
+  // cannot drop the other. Both halves live in `slider-element-form-utils`, which is what the panel's
+  // specification executes.
+  const handleNumericChange = (field: TSliderNumericField, rawValue: string) => {
+    setNumericDrafts((current) => recordSliderNumericDraft(current, field, rawValue));
+
+    const update = buildSliderNumericUpdate(field, rawValue, element);
+    if (update === null) {
       return;
     }
 
-    if (field === "min") {
-      updateElement(elementIdx, { range: { ...element.range, min: parsed } });
-    } else if (field === "max") {
-      updateElement(elementIdx, { range: { ...element.range, max: parsed } });
-    } else {
-      updateElement(elementIdx, { step: parsed });
-    }
+    updateElement(elementIdx, update);
   };
+
+  // Ending the entry hands the field back to the element: a completed entry re-renders as the number that was
+  // stored - normalised, so "1e3" reads back as 1000 - and an entry that never became a number reverts to the
+  // value the element still holds rather than leaving the author looking at an empty box.
+  const handleNumericBlur = (field: TSliderNumericField) => {
+    setNumericDrafts((current) => clearSliderNumericDraft(current, field));
+  };
+
+  /** The text a numeric field renders: what is being typed, or the number the element holds. */
+  const numericFieldValue = (field: TSliderNumericField, storedValue: number): string | number =>
+    getSliderNumericFieldText(numericDrafts, field, storedValue);
 
   return (
     <form>
@@ -146,9 +143,7 @@ export const SliderElementForm = ({
             className="mt-3"
             type="button"
             onClick={() => {
-              updateElement(elementIdx, {
-                subheader: createI18nString("", surveyLanguageCodes),
-              });
+              updateElement(elementIdx, buildSliderDescriptionUpdate(surveyLanguageCodes));
             }}>
             <PlusIcon className="mr-1 h-4 w-4" />
             {t("environments.surveys.edit.add_description")}
@@ -169,9 +164,12 @@ export const SliderElementForm = ({
               <Input
                 type="number"
                 id={rangeMinId}
-                value={element.range.min}
+                value={numericFieldValue("min", element.range.min)}
                 onChange={(e) => {
                   handleNumericChange("min", e.target.value);
+                }}
+                onBlur={() => {
+                  handleNumericBlur("min");
                 }}
                 step="any"
               />
@@ -185,9 +183,12 @@ export const SliderElementForm = ({
               <Input
                 type="number"
                 id={rangeMaxId}
-                value={element.range.max}
+                value={numericFieldValue("max", element.range.max)}
                 onChange={(e) => {
                   handleNumericChange("max", e.target.value);
+                }}
+                onBlur={() => {
+                  handleNumericBlur("max");
                 }}
                 step="any"
               />
@@ -203,9 +204,12 @@ export const SliderElementForm = ({
           <Input
             type="number"
             id={stepId}
-            value={element.step}
+            value={numericFieldValue("step", element.step)}
             onChange={(e) => {
               handleNumericChange("step", e.target.value);
+            }}
+            onBlur={() => {
+              handleNumericBlur("step");
             }}
             min={0}
             step="any"
@@ -250,13 +254,13 @@ export const SliderElementForm = ({
 
       {/* Show selected value toggle — enabled by default, so only an explicit false turns it off */}
       <AdvancedOptionToggle
-        isChecked={element.showValue !== false}
+        isChecked={isSliderValueShown(element)}
         onToggle={(checked: boolean) => {
           updateElement(elementIdx, {
             showValue: checked,
           });
         }}
-        htmlId={`showValue-${element.id}`}
+        htmlId={showValueId}
         title={t("environments.surveys.edit.show_selected_value")}
         description={t("environments.surveys.edit.show_selected_value_description")}
         childBorder

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import type { TFunction } from "i18next";
 import { describe, expect, test, vi } from "vitest";
+import type { TResponseDataValue } from "@formbricks/types/responses";
 import { TSurveyElementTypeEnum, ZSurveySliderElement } from "@formbricks/types/surveys/elements";
 import type { TSurveyElement } from "@formbricks/types/surveys/elements";
 import { validators } from "./validators";
@@ -426,6 +427,27 @@ describe("validators", () => {
       expect(result.valid).toBe(true);
     });
 
+    test("should return valid true for an explicit null, which is equally unanswered", () => {
+      // A cleared answer arrives as `null` rather than `undefined` in a JSON payload, and the engine's own
+      // emptiness check treats the two identically, so the grid rule defers to required validation for both.
+      // Worth asserting in its own right because a rule reading `null` as a number would see 0 - which sits on
+      // every grid anchored at zero, and would be waved through as an answer rather than deferred as an
+      // absence. The cast is the point rather than a workaround: `TResponseDataValue` does not admit null, so
+      // only a runtime payload can produce this and only a runtime assertion can cover it.
+      const explicitNull = null as unknown as TResponseDataValue;
+
+      const result = validators.stepMultipleOf.check(explicitNull, { step: 5 }, {} as TSurveyElement);
+      expect(result.valid).toBe(true);
+
+      // And on an offset grid, where 0 is NOT a grid point: still deferred, never rejected as off-grid.
+      const offsetGrid = validators.stepMultipleOf.check(
+        explicitNull,
+        { step: 5, offset: 2 },
+        {} as TSurveyElement
+      );
+      expect(offsetGrid.valid).toBe(true);
+    });
+
     test("should return valid true for empty collections", () => {
       // An empty collection is unanswered and defers to required validation, whereas a populated one is
       // a non-number and fails.
@@ -450,31 +472,48 @@ describe("validators", () => {
       ).toBe(false);
     });
 
-    test("should fail closed when the step is zero or negative", () => {
-      // Params that cannot describe a grid must not silently disable the constraint on the server.
+    test("should defer to the configuration layers when the step is zero or negative", () => {
+      // A step that describes no grid describes no constraint for this rule to apply, so the answer passes
+      // here. Configuration is not the respondent's mistake and is not reported as one: the element schema
+      // rejects a non-positive step with an author-facing message, and the evaluator's own configuration gate
+      // rejects an answer submitted against a slider it cannot read - both covered in slider-element.test.ts.
       const zeroStep = validators.stepMultipleOf.check(7, { step: 0 }, {} as TSurveyElement);
-      expect(zeroStep.valid).toBe(false);
+      expect(zeroStep.valid).toBe(true);
 
       const negativeStep = validators.stepMultipleOf.check(7, { step: -5 }, {} as TSurveyElement);
-      expect(negativeStep.valid).toBe(false);
+      expect(negativeStep.valid).toBe(true);
     });
 
-    test("should fail closed when the offset is not finite", () => {
-      const result = validators.stepMultipleOf.check(
-        50,
-        { step: 5, offset: Number.NaN },
-        {} as TSurveyElement
-      );
-      expect(result.valid).toBe(false);
-    });
-
-    test("should fail closed when the step is not finite", () => {
+    test("should defer to the configuration layers when the step is not finite or not a number", () => {
       const notANumber = validators.stepMultipleOf.check(7, { step: Number.NaN }, {} as TSurveyElement);
-      expect(notANumber.valid).toBe(false);
+      expect(notANumber.valid).toBe(true);
 
       const infinite = validators.stepMultipleOf.check(
         7,
         { step: Number.POSITIVE_INFINITY },
+        {} as TSurveyElement
+      );
+      expect(infinite.valid).toBe(true);
+
+      // `params` is a plain union, so another rule's params satisfy it and arrive here carrying no step at all.
+      const noStep = validators.stepMultipleOf.check(7, { min: 1 } as never, {} as TSurveyElement);
+      expect(noStep.valid).toBe(true);
+    });
+
+    test("should still reject when the origin is not a finite number", () => {
+      // Not the same case as a missing grid: there IS a grid here, and an origin that is not a number places it
+      // nowhere, so the value cannot be shown to sit on it. Rejecting keeps that explicit rather than leaving it
+      // to arithmetic on NaN, which compares false against every tolerance.
+      const notANumber = validators.stepMultipleOf.check(
+        50,
+        { step: 5, offset: Number.NaN },
+        {} as TSurveyElement
+      );
+      expect(notANumber.valid).toBe(false);
+
+      const infinite = validators.stepMultipleOf.check(
+        50,
+        { step: 5, offset: Number.POSITIVE_INFINITY },
         {} as TSurveyElement
       );
       expect(infinite.valid).toBe(false);

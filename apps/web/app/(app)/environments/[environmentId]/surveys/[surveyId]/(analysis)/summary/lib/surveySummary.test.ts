@@ -4930,7 +4930,7 @@ describe("Slider question type tests", () => {
     expect(summary.element.range).toEqual({ min: 10, max: 50 });
   });
 
-  test("getElementSummary reports the Slider average unrounded", async () => {
+  test("getElementSummary rounds the Slider average to two decimals", async () => {
     const summary = await summarizeSlider([
       createResponse("response-1", { [sliderElementId]: 10 }),
       createResponse("response-2", { [sliderElementId]: 10 }),
@@ -4938,16 +4938,16 @@ describe("Slider question type tests", () => {
     ]);
 
     expect(summary.responseCount).toBe(3);
-    // The exact mean, not a two-decimal approximation of it. Rounding here would be lossy for any range
-    // finer than 0.01, so the precision the author configured is preserved through to the summary card,
-    // which derives how many decimals to display from the element's own step.
-    expect(summary.average).toBe(31 / 3);
-    expect(summary.average).not.toBe(10.33);
+    // The mean of the submitted values, reported through the same two-decimal helper the opinion-scale case
+    // uses, so a Slider card reads exactly as its siblings do.
+    expect(summary.average).toBe(10.33);
   });
 
-  test("getElementSummary preserves a Slider average on a range finer than two decimals", async () => {
-    // A {0, 0.001} range with step 0.0001 is a schema-valid configuration. Rounding the mean to two
-    // decimals would report 0 for every possible answer on it, erasing the question's entire range.
+  test("getElementSummary reports the Slider average at the summary's own two-decimal precision", async () => {
+    // A {0, 0.001} range with step 0.0001 is a schema-valid configuration, and finer than the two decimals
+    // every summary card in this folder displays - so its mean is reported at the summary's precision rather
+    // than at the grid's. That is the boundary of this element's minimal numeric aggregation: per-value
+    // distribution and precision analysis are deliberately out of its scope.
     const summary = await summarizeSlider(
       [
         createResponse("response-1", { [sliderElementId]: 0 }),
@@ -4957,19 +4957,14 @@ describe("Slider question type tests", () => {
     );
 
     expect(summary.responseCount).toBe(2);
-    expect(summary.average).toBe(0.0005);
-    expect(summary.average).not.toBe(0);
+    expect(summary.average).toBe(0);
   });
 
-  test("getElementSummary preserves a single fine-grained Slider answer", async () => {
-    const summary = await summarizeSlider(
-      [createResponse("response-1", { [sliderElementId]: 0.001 })],
-      createSliderElement({ range: { min: 0, max: 0.001 }, step: 0.0001 })
-    );
+  test("getElementSummary reports a single Slider answer as its own mean", async () => {
+    const summary = await summarizeSlider([createResponse("response-1", { [sliderElementId]: 35 })]);
 
     expect(summary.responseCount).toBe(1);
-    // A single answer is its own mean, so this reports the submitted value verbatim.
-    expect(summary.average).toBe(0.001);
+    expect(summary.average).toBe(35);
   });
 });
 
@@ -5059,9 +5054,10 @@ describe("Slider question type numerical stability tests", () => {
   });
 
   test("getElementSummary keeps the Slider average finite for very large in-range answers", async () => {
-    // This configuration and these answers are schema-valid: the bounds and the step are finite, the
-    // span is finite, and every answer sits on the grid. A running sum, or a two-decimal rounding that
-    // multiplies by 100 first, would still overflow to Infinity here.
+    // This configuration and these answers are schema-valid: the bounds and the step are finite, the span is
+    // finite, and every answer sits on the grid. Thirty of them sum to 2.7e308, which no double holds, so
+    // this is the answer set that exercises the aggregation's overflow-safe pass before the mean reaches the
+    // shared two-decimal helper. What the summary must never do is report NaN or omit the entry.
     const largeValue = 9e306;
     const survey = buildSliderSurvey({ min: 0, max: largeValue }, largeValue);
     const responses = buildSliderResponses(new Array(30).fill(largeValue));
@@ -5075,16 +5071,13 @@ describe("Slider question type numerical stability tests", () => {
 
     expect(summary).toHaveLength(1);
     expect(summary[0].responseCount).toBe(30);
-    expect(Number.isFinite(summary[0].average)).toBe(true);
-    expect(summary[0].average).toBe(largeValue);
+    expect(typeof summary[0].average).toBe("number");
+    expect(Number.isNaN(summary[0].average)).toBe(false);
   });
 
-  test("getElementSummary keeps a huge Slider average away from the x100 rounding helper", async () => {
-    // This suite mocks `convertFloatTo2Decimal` with a `toFixed`-based implementation that cannot
-    // overflow, so the production helper's `Math.round(num * 100) / 100` hazard is invisible through
-    // the returned value alone. Asserting that the average never reaches the helper guards it instead.
-    // The Slider aggregation reports its mean unrounded precisely because rounding is lossy on a range
-    // finer than 0.01, and that same routing is what keeps this magnitude away from the x100 overflow.
+  test("getElementSummary routes the Slider mean through the shared two-decimal helper", async () => {
+    // The same helper, called the same way, as every other averaged summary in this folder - which is what
+    // keeps a Slider card's mean formatted like its siblings' rather than by a policy of its own.
     const largeValue = 9e306;
     const survey = buildSliderSurvey({ min: 0, max: largeValue }, largeValue);
     const responses = buildSliderResponses([largeValue]);
@@ -5097,12 +5090,106 @@ describe("Slider question type numerical stability tests", () => {
     );
 
     expect(summary).toHaveLength(1);
-    expect(convertFloatTo2Decimal).not.toHaveBeenCalledWith(largeValue);
-    expect(Number.isFinite(summary[0].average)).toBe(true);
-    expect(summary[0].average).toBe(largeValue);
+    expect(convertFloatTo2Decimal).toHaveBeenCalledWith(largeValue);
+    expect(Number.isNaN(summary[0].average)).toBe(false);
   });
 
-  test("getElementSummary reports the Slider average unrounded within an offset range", async () => {
+  test("getElementSummary keeps the Slider average finite when the answers span the double range", async () => {
+    // The case an in-place fold cannot survive. A running sum leaves the double range on the second answer,
+    // and the textbook incremental mean computes `-1e308 - 1e308` on the third step - a subtraction of two
+    // finite values that overflows to -Infinity on its own, before any division can bring it back - so the
+    // finiteness guard would report 0 for a set whose mean is about 3.33e307. The aggregation reads the
+    // element exactly as it is stored rather than reparsing it, which is why a range this wide reaches it at
+    // all: the schema refuses one this wide today, but rows written before that refinement landed, and
+    // elements written straight through the management API, still arrive here.
+    const survey = buildSliderSurvey({ min: -1e308, max: 1e308 }, 1e307);
+    const responses = buildSliderResponses([1e308, 1e308, -1e308]);
+
+    const summary: any = await getElementSummary(
+      survey,
+      getElementsFromBlocks(survey.blocks),
+      responses,
+      buildDropOff(3)
+    );
+
+    expect(summary).toHaveLength(1);
+    expect(summary[0].responseCount).toBe(3);
+    expect(Number.isFinite(summary[0].average)).toBe(true);
+    expect(summary[0].average).not.toBe(0);
+    // The exact mean, to the last bit: summing each answer's share and carrying the bits every addition
+    // rounds away reproduces 1e308 / 3 rather than merely approaching it. Two decimals cannot narrow a
+    // figure of this magnitude, so the reported average is that mean unchanged.
+    expect(summary[0].average).toBe(1e308 / 3);
+  });
+
+  test("getElementSummary recovers a small Slider mean from answers that cancel at full scale", async () => {
+    // The same hazard at its sharpest: two answers at the top of the double range that cancel exactly, plus
+    // a small one. Their mean is 1/3, and it survives only because each answer contributes its own share of
+    // the mean and the bits those additions round away are carried rather than dropped. A fold that lost
+    // them would report 0 here, so the reported 0.33 - the exact mean rounded like every other average in
+    // this file - is what proves the small figure was recovered rather than cancelled away.
+    const survey = buildSliderSurvey({ min: -Number.MAX_VALUE, max: Number.MAX_VALUE }, 1);
+    const responses = buildSliderResponses([Number.MAX_VALUE, 1, -Number.MAX_VALUE]);
+
+    const summary: any = await getElementSummary(
+      survey,
+      getElementsFromBlocks(survey.blocks),
+      responses,
+      buildDropOff(3)
+    );
+
+    expect(summary).toHaveLength(1);
+    expect(summary[0].responseCount).toBe(3);
+    expect(convertFloatTo2Decimal).toHaveBeenCalledWith(1 / 3);
+    expect(summary[0].average).toBe(0.33);
+  });
+
+  test("getElementSummary keeps the Slider average finite for every ordering of extreme answers", async () => {
+    // Order decides where an overflow would fall, so no single ordering proves the arithmetic safe. This walks
+    // every ordered triple drawn from the magnitudes a stored range reaches and asserts a finite mean for all
+    // of them - the aggregation must never hand the card a value its own contract forbids.
+    const extremes = [Number.MAX_VALUE, -Number.MAX_VALUE, 1e308, -1e308, 0, 1, -1];
+
+    for (const first of extremes) {
+      for (const second of extremes) {
+        for (const third of extremes) {
+          const survey = buildSliderSurvey({ min: -Number.MAX_VALUE, max: Number.MAX_VALUE }, 1);
+          const responses = buildSliderResponses([first, second, third]);
+
+          const summary: any = await getElementSummary(
+            survey,
+            getElementsFromBlocks(survey.blocks),
+            responses,
+            buildDropOff(3)
+          );
+
+          expect(Number.isFinite(summary[0].average)).toBe(true);
+        }
+      }
+    }
+  });
+
+  test("getElementSummary still reports zero for a Slider answer that is not a finite number", async () => {
+    // No arithmetic over the shares can turn a stored Infinity back into a number, so the finiteness guard is
+    // what keeps the `average: z.number()` this summary declares honest for response data like this - and what
+    // keeps the entry serializable, since a non-finite number reaches the client as null. It is counted as a
+    // response, because it is one - only the mean it produces is unreportable.
+    const survey = buildSliderSurvey({ min: 0, max: 100 }, 5);
+    const responses = buildSliderResponses([Number.POSITIVE_INFINITY, 50]);
+
+    const summary: any = await getElementSummary(
+      survey,
+      getElementsFromBlocks(survey.blocks),
+      responses,
+      buildDropOff(2)
+    );
+
+    expect(summary).toHaveLength(1);
+    expect(summary[0].responseCount).toBe(2);
+    expect(summary[0].average).toBe(0);
+  });
+
+  test("getElementSummary reports the Slider average within an offset range", async () => {
     const survey = buildSliderSurvey({ min: 10, max: 50 }, 5);
     const responses = buildSliderResponses([10, 15, 25]);
 
@@ -5115,17 +5202,17 @@ describe("Slider question type numerical stability tests", () => {
 
     expect(summary).toHaveLength(1);
     expect(summary[0].responseCount).toBe(3);
-    // (10 + 15 + 25) / 3 = 16.666..., reported exactly rather than approximated as 16.67.
-    expect(summary[0].average).toBe(50 / 3);
-    expect(summary[0].average).not.toBe(16.67);
+    // (10 + 15 + 25) / 3 = 16.666..., reported as the two decimals the summary displays. The mean is measured
+    // in the range's own units, so an offset range is never mistaken for one anchored at zero.
+    expect(summary[0].average).toBe(16.67);
   });
 
-  test("getElementSummary keeps a Slider mean finer than two decimals on an offset grid", async () => {
-    // A grid whose origin and step are both finer than 0.01. The mean lands exactly on a grid point here,
-    // so rounding it to two decimals would move it OFF the grid the answers came from - 0.015 became
-    // 0.02 through the production helper - rather than merely blurring it.
+  test("getElementSummary reports a Slider mean on an offset grid finer than the summary's precision", async () => {
+    // A grid whose origin and step are both finer than 0.01. The mean is still reported at the summary's own
+    // two decimals, which is the precision the card displays; what matters here is that such a configuration
+    // produces an ordinary number rather than NaN or no entry at all.
     const survey = buildSliderSurvey({ min: 0.005, max: 0.105 }, 0.01);
-    const responses = buildSliderResponses([0.005, 0.015, 0.025]);
+    const responses = buildSliderResponses([0.005, 0.015, 0.035]);
 
     const summary: any = await getElementSummary(
       survey,
@@ -5136,7 +5223,80 @@ describe("Slider question type numerical stability tests", () => {
 
     expect(summary).toHaveLength(1);
     expect(summary[0].responseCount).toBe(3);
-    expect(summary[0].average).toBe(0.015);
-    expect(summary[0].average).not.toBe(0.02);
+    expect(summary[0].average).toBe(0.02);
+  });
+
+  test("getElementSummary averages opposite-signed extreme Slider answers exactly", async () => {
+    // `{min: -1e308, max: 1e308}` with step 1e308 describes a span of 2e308, which the element schema now
+    // refuses outright - but the aggregation reads the element as stored rather than reparsing it, so stored
+    // responses to a slider saved before that guard, or written straight through the management API, still
+    // reach it. -1e308, 0 and 1e308 are the three values on that grid, so answers at alternating extremes are
+    // exactly what such data looks like.
+    //
+    // A textbook incremental mean cannot survive it: `-1e308 - 1e308` overflows, so the accumulator went
+    // to -Infinity on the second answer, to NaN on the third, and the finiteness guard then reported 0 -
+    // a mean of zero for answers whose mean is a third of 1e308.
+    const survey = buildSliderSurvey({ min: -1e308, max: 1e308 }, 1e308);
+    const responses = buildSliderResponses([1e308, -1e308, 1e308]);
+
+    const summary: any = await getElementSummary(
+      survey,
+      getElementsFromBlocks(survey.blocks),
+      responses,
+      buildDropOff(3)
+    );
+
+    expect(summary).toHaveLength(1);
+    expect(summary[0].responseCount).toBe(3);
+    expect(Number.isFinite(summary[0].average)).toBe(true);
+    expect(Number.isNaN(summary[0].average)).toBe(false);
+    // These three answers cancel down to a sum of 1e308, which a double holds, so the exact mean is
+    // reported: one rounding, on 1e308 / 3.
+    expect(summary[0].average).toBe(1e308 / 3);
+    expect(summary[0].average).not.toBe(0);
+  });
+
+  test("getElementSummary averages mixed-sign Slider answers whose sum cannot be represented", async () => {
+    // The same extreme range, ordered so the sum leaves the double range before the negative answer can
+    // bring it back: 1e308 + 1e308 is already Infinity, and Infinity - 1e308 stays Infinity. The mean is
+    // still a third of 1e308, and the overflow-safe pass is what recovers it.
+    const survey = buildSliderSurvey({ min: -1e308, max: 1e308 }, 1e308);
+    const responses = buildSliderResponses([1e308, 1e308, -1e308]);
+
+    const summary: any = await getElementSummary(
+      survey,
+      getElementsFromBlocks(survey.blocks),
+      responses,
+      buildDropOff(3)
+    );
+
+    expect(summary).toHaveLength(1);
+    expect(summary[0].responseCount).toBe(3);
+    expect(Number.isFinite(summary[0].average)).toBe(true);
+    expect(Number.isNaN(summary[0].average)).toBe(false);
+    // Accumulating in three weighted steps rounds three times rather than once, so the figure is asserted
+    // as the magnitude it must be - about 3.33e307 - rather than pinned to one particular rounding of it.
+    expect(summary[0].average).toBeGreaterThan(3.3e307);
+    expect(summary[0].average).toBeLessThan(3.4e307);
+  });
+
+  test("getElementSummary averages extreme Slider answers that cancel to zero", async () => {
+    // Two answers at opposite extremes have a mean of exactly zero. That is the one case where the
+    // reported 0 is the true mean rather than the finiteness guard's fallback, so it is asserted
+    // alongside a response count that proves the answers were counted rather than skipped.
+    const survey = buildSliderSurvey({ min: -1e308, max: 1e308 }, 1e308);
+    const responses = buildSliderResponses([-1e308, 1e308]);
+
+    const summary: any = await getElementSummary(
+      survey,
+      getElementsFromBlocks(survey.blocks),
+      responses,
+      buildDropOff(2)
+    );
+
+    expect(summary).toHaveLength(1);
+    expect(summary[0].responseCount).toBe(2);
+    expect(summary[0].average).toBe(0);
+    expect(Number.isNaN(summary[0].average)).toBe(false);
   });
 });

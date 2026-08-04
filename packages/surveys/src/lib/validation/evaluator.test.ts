@@ -1070,6 +1070,11 @@ describe("validateElementResponse", () => {
       ["a non-finite step", { step: Number.NaN }],
       ["a zero step", { step: 0 }],
       ["a negative step", { step: -5 }],
+      // A step wider than the span is the schema's third refusal. Left trusted, it would describe a grid
+      // holding a single point - the minimum - so the injected rules would wave that one value through as
+      // though the configuration were sound.
+      ["a step wider than the range", { range: { min: 0, max: 10 }, step: 20 }],
+      ["a step far wider than a narrow range", { range: { min: -1, max: 1 }, step: 1000 }],
     ];
 
     test.each(malformedConfigurations)(
@@ -1123,6 +1128,59 @@ describe("validateElementResponse", () => {
       expect(Object.keys(errorMap)).toEqual(["slider1"]);
       expect(errorMap.slider1.map((error) => error.ruleId)).toEqual(["sliderConfiguration"]);
       expect(getFirstErrorMessage(errorMap, "slider1")).toBe("errors.invalid_format");
+    });
+
+    // The step-versus-span refusal deserves its own rows because the one value such a grid does contain -
+    // the minimum - is where an unmirrored gate is invisible: every other value is already refused by the
+    // injected range or grid rule, so `0` submitted against {0..10, step 20} is the single answer that
+    // would slip through and persist.
+    test("should reject the minimum submitted against a step wider than the range", () => {
+      const element = buildMalformedSlider({ range: { min: 0, max: 10 }, step: 20 });
+
+      const result = validateElementResponse(element, 0, "en");
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((error) => error.ruleId)).toEqual(["sliderConfiguration"]);
+      expect(result.errors[0].message).toBe("errors.invalid_format");
+    });
+
+    test("should reject a step wider than the range through validateBlockResponses", () => {
+      const elements: TSurveyElement[] = [buildMalformedSlider({ range: { min: 0, max: 10 }, step: 20 })];
+
+      const errorMap = validateBlockResponses(elements, { slider1: 0 }, "en");
+
+      expect(Object.keys(errorMap)).toEqual(["slider1"]);
+      expect(errorMap.slider1.map((error) => error.ruleId)).toEqual(["sliderConfiguration"]);
+    });
+
+    test("should still trust a step exactly as wide as the range", () => {
+      // The schema refuses a step GREATER than the span, so a step equal to it is a lawful two-point grid
+      // and its rules must be injected as usual rather than swept up by the guard.
+      const element = buildMalformedSlider({ range: { min: 0, max: 10 }, step: 10 });
+
+      expect(validateElementResponse(element, 0, "en").valid).toBe(true);
+      expect(validateElementResponse(element, 10, "en").valid).toBe(true);
+
+      const offGrid = validateElementResponse(element, 5, "en");
+      expect(offGrid.valid).toBe(false);
+      expect(offGrid.errors.map((error) => error.ruleId)).toEqual(["__implicit_slider_step__"]);
+    });
+
+    test("should refuse a range whose span is not representable, whatever the step", () => {
+      // `max - min` overflows to Infinity here, so there is no span for a grid to be measured against: the
+      // injected grid rule would take its origin from -1e308, where the spacing between representable doubles
+      // is wider than any ordinary step, and no reconstruction from that origin can tell one grid point from
+      // the next. The canonical configuration parser refuses such a range, and because the element schema
+      // refines through that same parser the two layers cannot disagree - which is what this row pins. An
+      // element like this reaches evaluation only through data written before that refinement, or written
+      // straight through the management API.
+      const element = buildMalformedSlider({ range: { min: -1e308, max: 1e308 }, step: 1 });
+
+      const result = validateElementResponse(element, 0, "en");
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((error) => error.ruleId)).toEqual(["sliderConfiguration"]);
+      expect(result.errors[0].message).toBe("errors.invalid_format");
     });
 
     test("should leave other element types untouched by the configuration gate", () => {

@@ -68,6 +68,18 @@ const config = ({ mode }) => {
         ["**/*.test.tsx", "jsdom"],
         ["**/lib/**/*.test.ts", "jsdom"],
       ],
+      server: {
+        deps: {
+          // Radix primitives reach the respondent runtime through @formbricks/survey-ui, and this package
+          // builds with `react` aliased to `preact/compat` (see resolve.alias above), so rollup rewrites
+          // their React imports for both the ESM and the UMD bundle. Vitest externalizes real node_modules by
+          // default, which would instead load them untransformed against real React, whose `forwardRef`
+          // returns an object Preact cannot render at all ("[object Object]" did not match the QName
+          // production). Inlining them applies the same alias the shipped bundles are built with, so the
+          // element suites exercise the code the respondent actually runs.
+          inline: [/@radix-ui\//],
+        },
+      },
       setupFiles: ["./vitestSetup.ts"],
       include: ["**/*.test.ts", "**/*.test.tsx"],
       exclude: ["dist/**", "node_modules/**"],

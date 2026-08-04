@@ -1,5 +1,10 @@
 import type { TFunction } from "i18next";
 import type { TResponseData, TResponseDataValue } from "@formbricks/types/responses";
+// Imported from `constants` rather than through the `elements` re-export on purpose: `elements` evaluates
+// every Zod schema in the survey type system at module load, which would put the whole of Zod into the
+// respondent bundle. `constants` is the deliberately Zod-free half of the same source of truth.
+import type { TSurveySliderConfiguration } from "@formbricks/types/surveys/constants";
+import { parseSurveySliderConfiguration } from "@formbricks/types/surveys/constants";
 import type { TSurveyElement } from "@formbricks/types/surveys/elements";
 import { TSurveyElementTypeEnum } from "@formbricks/types/surveys/elements";
 import type {
@@ -204,47 +209,24 @@ const checkSliderValueType = (
 /**
  * Read a slider's numeric configuration, or `null` when it cannot be trusted.
  *
- * The element schema guarantees a finite `range` and `step` with `min < max`, but a survey saved from the
- * editor's draft autosave path reaches persistence without passing that schema, so at runtime a slider can
- * arrive with `range` or `step` absent, non-numeric or contradictory even though the compiled type declares
- * them present. Every read of the configuration therefore goes through this function, which both keeps the
- * rule injector free of unguarded dereferences - an absent `range` would otherwise throw a TypeError and
- * surface as a generic 500 - and gives the caller a single place to decide to fail closed.
+ * The verdict is delegated to `parseSurveySliderConfiguration`, the same function the element schema refines
+ * with, so a configuration the editor accepts is exactly a configuration whose answers can be validated here.
+ * Sharing it is what keeps the two from drifting: a bound the schema rejects is never treated as trustworthy
+ * on the way in, and a bound the schema admits is never left unanswerable on the way out.
+ *
+ * A survey saved from the editor's draft autosave path reaches persistence without passing that schema, so at
+ * runtime a slider can arrive with `range` or `step` absent, non-numeric or contradictory even though the
+ * compiled type declares them present. Routing every read through this function keeps the rule injector free
+ * of unguarded dereferences - an absent `range` would otherwise throw a TypeError and surface as a generic
+ * 500 - and gives the caller a single place to decide to fail closed.
  */
-const readSliderConfig = (element: TSurveyElement): { min: number; max: number; step: number } | null => {
+const readSliderConfig = (element: TSurveyElement): TSurveySliderConfiguration | null => {
   if (element.type !== TSurveyElementTypeEnum.Slider) {
     return null;
   }
 
-  // Read through an untyped view so the defensive checks below are actually reachable: the narrowed slider
-  // type asserts these fields are present and numeric, which is exactly the assumption being verified.
-  const { range, step } = element as unknown as { range?: unknown; step?: unknown };
-
-  if (typeof range !== "object" || range === null) {
-    return null;
-  }
-
-  const { min, max } = range as { min?: unknown; max?: unknown };
-
-  if (typeof min !== "number" || !Number.isFinite(min)) {
-    return null;
-  }
-
-  if (typeof max !== "number" || !Number.isFinite(max)) {
-    return null;
-  }
-
-  // A non-positive step admits no grid at all, and an inverted range admits no value at all; both are
-  // rejected by the element schema, so encountering either here means the configuration is untrustworthy.
-  if (typeof step !== "number" || !Number.isFinite(step) || step <= 0) {
-    return null;
-  }
-
-  if (min >= max) {
-    return null;
-  }
-
-  return { min, max, step };
+  const result = parseSurveySliderConfiguration(element);
+  return result.valid ? result.configuration : null;
 };
 
 /**

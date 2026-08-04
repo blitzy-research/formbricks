@@ -1067,41 +1067,64 @@ export const getElementSummary = async (
         break;
       }
       case TSurveyElementTypeEnum.Slider: {
-        let totalResponseCount = 0;
-        // The mean is updated in place instead of dividing a running sum at the end. A Slider's bounds
-        // are author-configured and only constrained to describe a finite span, so a sum over many
-        // large-magnitude answers can overflow to Infinity long before the division happens. An
-        // incremental mean keeps every intermediate value inside the answered range, because
-        // `answer - runningAverage` can never exceed that span.
-        let runningAverage = 0;
+        // Every numeric answer, collected so the mean can be taken in one reduction over all of them
+        // rather than folded in place. A Slider's bounds are author-configured and constrained only to
+        // describe a finite span, so both of the in-place forms break on answers near the top of the
+        // double range: a running sum overflows to Infinity before the division happens, and the
+        // textbook incremental mean `mean += (answer - mean) / n` overflows on the difference itself -
+        // for the answers 1e308, 1e308 and -1e308 it reaches -Infinity on the second answer and NaN on
+        // the third, and a mean whose true value is about 3.33e307 would be reported as 0. Collecting
+        // first is also what the choice-based cases in this switch already do, so the allocation is no
+        // new cost in kind.
+        const answeredValues: number[] = [];
         let dismissed = 0;
 
         responses.forEach((response) => {
           const answer = response.data[element.id];
           if (typeof answer === "number") {
-            totalResponseCount++;
-            runningAverage += (answer - runningAverage) / totalResponseCount;
+            answeredValues.push(answer);
           } else if (response.ttc && response.ttc[element.id] > 0) {
             dismissed++;
           }
         });
 
+        const totalResponseCount = answeredValues.length;
+
+        // Neumaier's compensated summation over each answer's SHARE of the mean, `answer / count`.
+        // Dividing before adding is what makes the arithmetic safe: every term is at most one answer's
+        // own magnitude, and the exact sum of the shares lies between the smallest and the largest
+        // answer, so no partial sum can leave the range the answers came from and no intermediate can
+        // overflow. The compensation carries the low-order bits each addition rounds away, which is what
+        // keeps the result faithful where a plain sum of shares would drift - it reports the exact mean
+        // of the three extreme answers above, and reproduces the mean of a fine range to the last bit.
+        // An empty answer set never enters the loop, so it yields 0 rather than a division by zero.
+        let shareSum = 0;
+        let roundedOffBits = 0;
+        answeredValues.forEach((answer) => {
+          const share = answer / totalResponseCount;
+          const carried = shareSum + share;
+          roundedOffBits +=
+            Math.abs(shareSum) >= Math.abs(share) ? shareSum - carried + share : share - carried + shareSum;
+          shareSum = carried;
+        });
+        const mean = shareSum + roundedOffBits;
+
+        // Rounded to two decimals through the same helper every other average in this file uses, so a
+        // Slider reads like the opinion-scale and rating cards beside it - which print exactly this figure.
+        const average = convertFloatTo2Decimal(mean);
+
         summary.push({
           type: element.type,
           element,
           responseCount: totalResponseCount,
-          // The mean is reported at full double precision rather than rounded to two decimals. A
-          // Slider's range is author-configured and may be finer than 0.01 - a {0, 0.001} range with
-          // step 0.0001 is a valid configuration - so rounding here would collapse every mean on such
-          // a range to 0 and destroy the number before the presentation layer ever sees it. Rounding
-          // for display is the summary card's concern, where the configured step is available to
-          // derive an appropriate precision from.
-          //
-          // Seeding the mean at 0 already reports 0 for an element with no numeric answers, so no NaN
-          // fallback is needed for the empty set. The finiteness check keeps the contract declared by
-          // `ZSurveyElementSummarySlider` (`average: z.number().finite()`) satisfied even for
-          // pathological legacy response data that the current bounds would no longer accept.
-          average: Number.isFinite(runningAverage) ? runningAverage : 0,
+          // `convertFloatTo2Decimal` multiplies before it rounds, so a mean within a couple of orders of
+          // magnitude of the largest double can still overflow inside it even though the summation above
+          // cannot. A non-finite average would neither satisfy `ZSurveyElementSummarySlider`
+          // (`average: z.number()`) nor survive the JSON serialization that carries this summary to the
+          // client, where it would arrive as null. Reporting 0 in that case also covers the one input the
+          // summation cannot absorb: a non-finite value already stored as an answer, which no arithmetic
+          // over the shares can turn back into a number.
+          average: Number.isFinite(average) ? average : 0,
           dismissed: {
             count: dismissed,
           },

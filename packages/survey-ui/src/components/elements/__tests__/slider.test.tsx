@@ -5,17 +5,15 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { Slider } from "../slider";
 
 /**
- * The control delegates its interaction and accessibility contract to a native `<input type="range">`, so
- * these specs assert the contract handed to the platform - the bounds, the grid, the value, the state and
- * the presentation driven from them - rather than re-testing the platform itself.
+ * The control delegates its interaction, snapping and accessibility contract to the Radix slider
+ * primitive, so these specs assert the contract handed to that primitive and the behaviour this component
+ * adds on top of it: which interactions record an answer, when they record it, and how the presentation
+ * follows.
  *
- * Drag, track-press geometry, key semantics (arrows, Page Up/Down, Home/End), grid snapping and right-to-left
- * inversion are deliberately NOT asserted here: this suite runs under happy-dom, which renders no layout and
- * implements none of those behaviours, so an assertion about them would pass or fail for reasons unrelated to
- * this component. They are verified against a real browser instead, and what makes that sufficient is exactly
- * what these specs pin: the browser is handed `min`, `max` and `step`, and HTML defines a range input's
- * allowed values as `min + n * step` - the same grid, anchored at the same origin, that the shared
- * `stepMultipleOf` response rule enforces.
+ * Layout-dependent behaviour is exercised by stubbing the geometry the primitive measures, because
+ * happy-dom renders no layout of its own. Anything that only a real browser can prove - actual dragging,
+ * right-to-left inversion of the painted track, and focus rings - is verified there instead; what these
+ * specs pin is that the primitive is handed the direction, bounds and grid it needs to produce them.
  */
 
 // ---------------------------------------------------------------------------
@@ -29,13 +27,14 @@ const defaultProps = {
   min: 0,
   max: 100,
   step: 5,
-  onChange: vi.fn(),
+  // Typed, so the recorded arguments are numbers rather than `any` when they are read back.
+  onChange: vi.fn<(value: number) => void>(),
 };
 
-/** The platform control: `input[type="range"]` carries the implicit `slider` role. */
-const getControl = (): HTMLInputElement => screen.getByRole<HTMLInputElement>("slider");
+/** The primitive puts `role="slider"` on its thumb, which is the element that carries the value. */
+const getThumb = (): HTMLElement => screen.getByRole("slider");
 
-/** Locates one of the presentation slots, failing loudly rather than asserting a missing element away. */
+/** Locates one of the composition slots, failing loudly rather than asserting a missing element away. */
 const getSlot = (container: HTMLElement, slot: string): HTMLElement => {
   const element = container.querySelector<HTMLElement>(`[data-slot="${slot}"]`);
   if (!element) {
@@ -44,37 +43,81 @@ const getSlot = (container: HTMLElement, slot: string): HTMLElement => {
   return element;
 };
 
-/** Drives the platform control the way a browser does: it resolves a value, then reports it. */
-const selectValue = (value: number): void => {
-  fireEvent.change(getControl(), { target: { value: String(value) } });
+/** Presses and releases a key on the thumb; the primitive listens for it on the root above. */
+const pressKey = (key: string): void => {
+  const thumb = getThumb();
+  fireEvent.keyDown(thumb, { key });
+  fireEvent.keyUp(thumb, { key });
+};
+
+/** Presses and releases a pointer on the thumb, which the primitive treats as a focus, not a slide. */
+const pressThumb = (button = 0): void => {
+  const thumb = getThumb();
+  fireEvent.pointerDown(thumb, { button, pointerId: 1 });
+  fireEvent.pointerUp(thumb, { button, pointerId: 1 });
 };
 
 /**
- * Presses and releases a key on the platform control.
+ * Presses and releases a pointer on the root.
  *
- * Both halves are dispatched because the value a key resolves to is the default action of the press, so the
- * release is the first point at which the control's own value can be read back.
+ * No geometry is stubbed, so the primitive measures a zero-width track and resolves the press to the
+ * lower bound - the same value an unanswered thumb is already parked on, which is exactly the case the
+ * primitive reports nothing for.
  */
-const pressKey = (key: string): void => {
-  const control = getControl();
-  fireEvent.keyDown(control, { key });
-  fireEvent.keyUp(control, { key });
+const pressRoot = (container: HTMLElement, button = 0): void => {
+  const root = getSlot(container, "slider");
+  fireEvent.pointerDown(root, { button, pointerId: 1 });
+  fireEvent.pointerUp(root, { button, pointerId: 1 });
 };
 
-/** Presses and releases a pointer on the platform control, the way a press on the track arrives. */
-const pressPointer = (button = 0): void => {
-  const control = getControl();
-  fireEvent.pointerDown(control, { button });
-  fireEvent.pointerUp(control, { button });
+/** Gives the primitive a measurable track and a working pointer-capture implementation. */
+const stubGeometry = (container: HTMLElement, width = 100): void => {
+  const root = getSlot(container, "slider");
+  root.getBoundingClientRect = () =>
+    ({
+      width,
+      height: 8,
+      left: 0,
+      top: 0,
+      right: width,
+      bottom: 8,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    }) as DOMRect;
+
+  const proto = window.HTMLElement.prototype as unknown as Record<string, unknown>;
+  proto.setPointerCapture = function setPointerCapture(this: Record<string, unknown>): void {
+    this.__captured = true;
+  };
+  proto.hasPointerCapture = function hasPointerCapture(this: Record<string, unknown>): boolean {
+    return Boolean(this.__captured);
+  };
+  proto.releasePointerCapture = function releasePointerCapture(this: Record<string, unknown>): void {
+    this.__captured = false;
+  };
 };
 
-// ===========================================================================
-// Slider component tests
-// ===========================================================================
+/**
+ * Drags across the track, reporting every intermediate position the way a pointer does.
+ *
+ * Positions are given in pixels along a 100px track, so they read as percentages of the configured range.
+ */
+const drag = (container: HTMLElement, positions: number[]): void => {
+  stubGeometry(container);
+  const root = getSlot(container, "slider");
+  const [first, ...rest] = positions;
+
+  fireEvent.pointerDown(root, { button: 0, pointerId: 1, clientX: first });
+  for (const position of rest) {
+    fireEvent.pointerMove(root, { pointerId: 1, clientX: position });
+  }
+  fireEvent.pointerUp(root, { button: 0, pointerId: 1, clientX: positions[positions.length - 1] });
+};
 
 describe("Slider", () => {
   beforeEach(() => {
-    defaultProps.onChange.mockClear();
+    defaultProps.onChange = vi.fn<(value: number) => void>();
   });
 
   // -------------------------------------------------------------------------
@@ -95,24 +138,32 @@ describe("Slider", () => {
     });
 
     test("renders the description when provided", () => {
-      render(<Slider {...defaultProps} description="Pick any value on the scale" />);
+      render(<Slider {...defaultProps} description="Pick a number" />);
 
-      expect(screen.getByText("Pick any value on the scale")).toBeInTheDocument();
+      expect(screen.getByText("Pick a number")).toBeInTheDocument();
     });
 
     test("does not render a description when none is provided", () => {
       render(<Slider {...defaultProps} />);
 
-      expect(screen.queryByText("Pick any value on the scale")).not.toBeInTheDocument();
+      expect(screen.queryByText("Pick a number")).not.toBeInTheDocument();
     });
 
     test("renders the track, range and thumb composition", () => {
-      const { container } = render(<Slider {...defaultProps} value={50} />);
+      const { container } = render(<Slider {...defaultProps} />);
 
       expect(getSlot(container, "slider")).toBeInTheDocument();
       expect(getSlot(container, "slider-track")).toBeInTheDocument();
       expect(getSlot(container, "slider-range")).toBeInTheDocument();
       expect(getSlot(container, "slider-thumb")).toBeInTheDocument();
+    });
+
+    test("nests the fill inside the track and keeps the thumb its sibling", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+
+      const track = getSlot(container, "slider-track");
+      expect(getSlot(container, "slider-range").parentElement).toBe(track);
+      expect(getSlot(container, "slider-thumb").closest(`[data-slot="slider-track"]`)).toBeNull();
     });
 
     test("applies the element id to the wrapper", () => {
@@ -121,170 +172,183 @@ describe("Slider", () => {
       expect(container.querySelector("#test-slider")).toBeInTheDocument();
     });
 
-    test("hides the presentation layer from assistive technology", () => {
-      // The role, the value and the focus all live on the input; announcing the decoration as well would
-      // report the same control twice.
-      const { container } = render(<Slider {...defaultProps} value={50} />);
+    test("renders the thumb as the element that carries the slider role", () => {
+      const { container } = render(<Slider {...defaultProps} />);
 
-      expect(getSlot(container, "slider")).toHaveAttribute("aria-hidden", "true");
+      expect(getSlot(container, "slider-thumb")).toBe(getThumb());
     });
   });
 
   // -------------------------------------------------------------------------
-  // The contract handed to the platform control
+  // Primitive contract
   // -------------------------------------------------------------------------
 
-  describe("platform contract", () => {
-    test("renders a native range input carrying the control id", () => {
+  describe("primitive contract", () => {
+    test("carries the control id on the composition root", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+
+      expect(getSlot(container, "slider")).toHaveAttribute("id", "test-slider-input");
+    });
+
+    test("publishes the configured bounds on the thumb", () => {
       render(<Slider {...defaultProps} />);
-      const control = getControl();
 
-      expect(control.tagName).toBe("INPUT");
-      expect(control).toHaveAttribute("type", "range");
-      expect(control).toHaveAttribute("id", "test-slider-input");
+      expect(getThumb()).toHaveAttribute("aria-valuemin", "0");
+      expect(getThumb()).toHaveAttribute("aria-valuemax", "100");
     });
 
-    test("hands the configured bounds and step to the platform", () => {
-      render(<Slider {...defaultProps} value={50} />);
-      const control = getControl();
+    test("publishes bounds that do not start at zero", () => {
+      render(<Slider {...defaultProps} min={10} max={50} />);
 
-      expect(control).toHaveAttribute("min", "0");
-      expect(control).toHaveAttribute("max", "100");
-      expect(control).toHaveAttribute("step", "5");
+      expect(getThumb()).toHaveAttribute("aria-valuemin", "10");
+      expect(getThumb()).toHaveAttribute("aria-valuemax", "50");
     });
 
-    test("hands a range that does not start at zero to the platform unchanged", () => {
-      // The grid is anchored at `min`, so the origin the platform snaps to is the origin the server's grid
-      // rule measures from: 10, 15, 20 ... and never 12.
-      render(<Slider {...defaultProps} min={10} max={50} step={5} value={15} />);
-      const control = getControl();
-
-      expect(control).toHaveAttribute("min", "10");
-      expect(control).toHaveAttribute("max", "50");
-      expect(control).toHaveAttribute("step", "5");
-    });
-
-    test("hands a decimal step to the platform without rounding it", () => {
-      render(<Slider {...defaultProps} min={0} max={1} step={0.1} value={0.3} />);
-
-      expect(getControl()).toHaveAttribute("step", "0.1");
-    });
-
-    test("hands a step far finer than a whole number to the platform verbatim", () => {
-      render(<Slider {...defaultProps} min={0} max={0.001} step={0.0001} value={0.0005} />);
-
-      expect(getControl()).toHaveAttribute("step", "0.0001");
-    });
-
-    test("hands a step written in scientific notation to the platform verbatim", () => {
-      // A step whose shortest form carries an exponent rather than a decimal point still describes a grid,
-      // and HTML's floating-point grammar accepts that form, so it is passed through as authored. Deriving a
-      // decimal count from the printed step instead - counting the digits after a "." that is not there -
-      // collapses this grid to whole numbers, leaving every value in it unreachable.
-      render(<Slider {...defaultProps} min={0} max={0.001} step={1e-7} value={3e-7} />);
-      const control = getControl();
-
-      expect(control).toHaveAttribute("step", "1e-7");
-      expect(control).toHaveAttribute("min", "0");
-      expect(control).toHaveAttribute("max", "0.001");
-    });
-
-    test("holds an offset grid at its own minimum rather than a coarser neighbour", () => {
-      // The grid 0.005, 0.015, 0.025 ... is anchored at a value finer than its own step. Rounding the
-      // origin to the step's precision would move the first selectable point to 0.015 and put the
-      // configured minimum out of reach, so the value is handed over exactly as configured.
-      render(<Slider {...defaultProps} min={0.005} max={0.105} step={0.01} value={0.005} />);
-      const control = getControl();
-
-      expect(control).toHaveAttribute("min", "0.005");
-      expect(control).toHaveAttribute("max", "0.105");
-      expect(control).toHaveAttribute("step", "0.01");
-      expect(control).toHaveValue("0.005");
-    });
-
-    test("omits the step attribute when the configuration describes no grid", () => {
-      // A non-positive step would make the attribute invalid and silently mean 1; omitting it reaches that
-      // same default without asserting a grid the configuration never defined.
-      render(<Slider {...defaultProps} step={0} />);
-
-      expect(getControl()).not.toHaveAttribute("step");
-    });
-
-    test("reflects the selected value on the control", () => {
+    test("publishes the selected value on the thumb", () => {
       render(<Slider {...defaultProps} value={35} />);
 
-      expect(getControl()).toHaveValue("35");
+      expect(getThumb()).toHaveAttribute("aria-valuenow", "35");
     });
-  });
 
-  // -------------------------------------------------------------------------
-  // Value reporting
-  // -------------------------------------------------------------------------
+    test("resolves the thumb rather than leaving it hidden", () => {
+      // The primitive hides a thumb it cannot match to a value. A hidden thumb means the value never
+      // reached it, which is the shape of a renderer-ordering defect rather than a styling choice.
+      render(<Slider {...defaultProps} value={35} />);
 
-  describe("value reporting", () => {
-    test("reports the value the platform resolved", () => {
+      expect(getThumb().getAttribute("style") ?? "").not.toContain("display: none");
+    });
+
+    test("advertises the horizontal orientation", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+
+      expect(getSlot(container, "slider")).toHaveAttribute("data-orientation", "horizontal");
+      expect(getThumb()).toHaveAttribute("aria-orientation", "horizontal");
+    });
+
+    test("moves by one step per arrow key", () => {
       render(<Slider {...defaultProps} />);
 
-      selectValue(45);
+      pressKey("ArrowRight");
 
-      expect(defaultProps.onChange).toHaveBeenCalledWith(45);
+      expect(defaultProps.onChange).toHaveBeenCalledWith(5);
     });
 
-    test("reports a number, not a string", () => {
-      render(<Slider {...defaultProps} />);
+    test("measures the grid from the lower bound rather than from zero", () => {
+      render(<Slider {...defaultProps} min={10} max={50} step={5} />);
 
-      selectValue(45);
+      pressKey("ArrowRight");
 
-      expect(typeof defaultProps.onChange.mock.calls[0][0]).toBe("number");
+      expect(defaultProps.onChange).toHaveBeenCalledWith(15);
     });
 
-    test("reports the minimum as an ordinary value", () => {
-      // A slider whose minimum is 0 must be able to answer 0: the runtime keeps `undefined` for unanswered,
-      // so nothing here may treat the lowest value as "no answer". Started from 50 because the control is
-      // already parked at the minimum, and a platform control reports only an actual change.
-      render(<Slider {...defaultProps} value={50} />);
-
-      selectValue(0);
-
-      expect(defaultProps.onChange).toHaveBeenCalledWith(0);
-    });
-
-    test("reports a decimal value without rounding it", () => {
+    test("snaps to a decimal grid without floating-point drift", () => {
       render(<Slider {...defaultProps} min={0} max={1} step={0.1} />);
 
-      selectValue(0.3);
+      pressKey("ArrowRight");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(0.1);
+    });
+
+    test("snaps to a grid finer than a whole number of decimal places", () => {
+      render(<Slider {...defaultProps} min={0} max={0.01} step={0.0007} />);
+
+      pressKey("ArrowRight");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(0.0007);
+    });
+
+    test("snaps to an offset decimal grid from its own origin", () => {
+      // The primitive rounds to the step's own precision, which would land on 0.2 - a point that is not on
+      // the 0.05 + n * 0.1 grid the shared response rule enforces, and would be rejected on submission.
+      render(<Slider {...defaultProps} min={0.05} max={1} step={0.1} />);
+
+      pressKey("ArrowRight");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(0.15);
+    });
+
+    test("advances one step at a time on a grid whose origin is finer than its step", () => {
+      render(<Slider {...defaultProps} min={10.5} max={20.5} step={1} value={10.5} />);
+
+      pressKey("ArrowRight");
+      expect(defaultProps.onChange).toHaveBeenLastCalledWith(11.5);
+      expect(getThumb()).toHaveAttribute("aria-valuenow", "11.5");
+
+      pressKey("ArrowRight");
+      expect(defaultProps.onChange).toHaveBeenLastCalledWith(12.5);
+    });
+
+    test("steps back onto the same offset grid", () => {
+      render(<Slider {...defaultProps} min={10.5} max={20.5} step={1} value={12.5} />);
+
+      pressKey("ArrowLeft");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(11.5);
+    });
+
+    test("holds the upper end of an offset grid inside the configured range", () => {
+      // 10.5 + n * 1 never reaches 20, so the highest selectable point is 19.5 rather than the bound.
+      render(<Slider {...defaultProps} min={10.5} max={20} step={1} value={18.5} />);
+
+      pressKey("End");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(19.5);
+    });
+
+    test("leaves a value the primitive already placed on the grid exactly as reported", () => {
+      // Three tenths from zero: the primitive already cleans this to 0.3, and re-deriving it would put the
+      // binary-fraction noise back.
+      render(<Slider {...defaultProps} min={0} max={1} step={0.1} value={0.2} />);
+
+      pressKey("ArrowRight");
 
       expect(defaultProps.onChange).toHaveBeenCalledWith(0.3);
     });
 
-    test("reports a value from a grid finer than a whole number of decimal places", () => {
-      // The component applies no precision policy of its own, so a value the platform resolves on a
-      // 1e-7 grid is reported as-is. Rounding it here would emit a value the server's grid rule rejects.
-      render(<Slider {...defaultProps} min={0} max={0.001} step={1e-7} />);
+    test("jumps by ten steps on a page key", () => {
+      render(<Slider {...defaultProps} />);
 
-      selectValue(3e-7);
+      pressKey("PageUp");
 
-      expect(defaultProps.onChange).toHaveBeenCalledWith(3e-7);
+      expect(defaultProps.onChange).toHaveBeenCalledWith(50);
     });
 
-    test("reports the first point of an offset decimal grid, not a rounded one", () => {
-      // Grid 0.005, 0.015, 0.025 ... Answering the second point must report 0.015 exactly: a value nudged
-      // to the step's own precision - 0.01 or 0.02 - is off this grid and would be rejected on submission.
-      render(<Slider {...defaultProps} min={0.005} max={0.105} step={0.01} value={0.005} />);
+    test("snaps to the upper bound on End", () => {
+      render(<Slider {...defaultProps} />);
 
-      selectValue(0.015);
+      pressKey("End");
 
-      expect(defaultProps.onChange).toHaveBeenCalledWith(0.015);
+      expect(defaultProps.onChange).toHaveBeenCalledWith(100);
     });
 
-    test("reports a negative value on a range spanning zero", () => {
-      render(<Slider {...defaultProps} min={-50} max={50} step={5} />);
+    test("falls back to a unit grid when the configuration describes none", () => {
+      // A zero step would make the primitive divide by zero while snapping. The element schema rejects it,
+      // so this only keeps a draft an author is still typing operable.
+      render(<Slider {...defaultProps} step={0} />);
 
-      selectValue(-25);
+      pressKey("ArrowRight");
 
-      expect(defaultProps.onChange).toHaveBeenCalledWith(-25);
+      expect(defaultProps.onChange).toHaveBeenCalledWith(1);
     });
 
+    test("keeps a value below the lower bound out of the published value", () => {
+      render(<Slider {...defaultProps} value={-20} />);
+
+      expect(getThumb()).toHaveAttribute("aria-valuenow", "0");
+    });
+
+    test("keeps a value above the upper bound out of the published value", () => {
+      render(<Slider {...defaultProps} value={140} />);
+
+      expect(getThumb()).toHaveAttribute("aria-valuenow", "100");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Recording an answer
+  // -------------------------------------------------------------------------
+
+  describe("recording an answer", () => {
     test("emits nothing on mount", () => {
       render(<Slider {...defaultProps} />);
 
@@ -292,18 +356,57 @@ describe("Slider", () => {
     });
 
     test("emits nothing on mount when already answered", () => {
-      render(<Slider {...defaultProps} value={50} />);
+      render(<Slider {...defaultProps} value={40} />);
 
       expect(defaultProps.onChange).not.toHaveBeenCalled();
     });
 
-    test("never reports a value that is not a finite number", () => {
-      // A range input cannot hold an empty or unparsable value - the platform sanitises one into its own
-      // default - so this asserts the invariant that survives that sanitisation rather than a rejection the
-      // platform never asks for.
+    test("emits nothing when re-rendered with a new value", () => {
+      const { rerender } = render(<Slider {...defaultProps} value={40} />);
+
+      rerender(<Slider {...defaultProps} value={60} />);
+
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+
+    test("reports a number, not a string", () => {
+      render(<Slider {...defaultProps} />);
+
+      pressKey("ArrowRight");
+
+      expect(typeof defaultProps.onChange.mock.calls[0][0]).toBe("number");
+    });
+
+    test("reports exactly once per key press", () => {
+      render(<Slider {...defaultProps} />);
+
+      pressKey("ArrowRight");
+
+      expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
+    });
+
+    test("reports once per key press across a run of them", () => {
       render(<Slider {...defaultProps} value={50} />);
 
-      fireEvent.change(getControl(), { target: { value: "" } });
+      pressKey("ArrowRight");
+      pressKey("ArrowRight");
+
+      expect(defaultProps.onChange.mock.calls.map((call) => call[0])).toEqual([55, 60]);
+    });
+
+    test("reports a negative value on a range spanning zero", () => {
+      render(<Slider {...defaultProps} min={-50} max={50} step={10} />);
+
+      pressKey("ArrowRight");
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(-40);
+    });
+
+    test("never reports a value that is not a finite number", () => {
+      render(<Slider {...defaultProps} />);
+
+      pressKey("ArrowRight");
+      pressKey("End");
 
       for (const [reported] of defaultProps.onChange.mock.calls) {
         expect(Number.isFinite(reported)).toBe(true);
@@ -312,201 +415,266 @@ describe("Slider", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Unanswered state
+  // One answer per interaction
+  //
+  // A drag reports a position for every movement. Only the settled value is recorded, because each
+  // recorded value clones the renderer's response and timing records.
   // -------------------------------------------------------------------------
 
-  describe("unanswered state", () => {
-    test("parks the control at the minimum while unanswered", () => {
-      render(<Slider {...defaultProps} />);
+  describe("one answer per interaction", () => {
+    test("records a drag once, with the value it settled on", () => {
+      const { container } = render(<Slider {...defaultProps} />);
 
-      expect(getControl()).toHaveValue("0");
+      drag(container, [10, 30, 55, 80]);
+
+      expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
+      expect(defaultProps.onChange).toHaveBeenCalledWith(80);
     });
 
-    test("parks the control at a non-zero minimum while unanswered", () => {
-      render(<Slider {...defaultProps} min={10} max={50} />);
+    test("does not record anything while the pointer is still down", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+      stubGeometry(container);
+      const root = getSlot(container, "slider");
 
-      expect(getControl()).toHaveValue("10");
+      fireEvent.pointerDown(root, { button: 0, pointerId: 1, clientX: 20 });
+      fireEvent.pointerMove(root, { pointerId: 1, clientX: 45 });
+      fireEvent.pointerMove(root, { pointerId: 1, clientX: 70 });
+
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
     });
 
-    test("distinguishes an unanswered thumb from one answered with the minimum", () => {
-      // The parked position is identical, so the fill is the only thing that can carry the difference.
-      const unanswered = render(<Slider {...defaultProps} />);
-      expect(getSlot(unanswered.container, "slider-thumb")).toHaveClass("bg-input-bg");
-      unanswered.unmount();
+    test("follows the pointer visually while the answer waits", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+      stubGeometry(container);
+      const root = getSlot(container, "slider");
 
-      const answered = render(<Slider {...defaultProps} value={0} />);
-      expect(getSlot(answered.container, "slider-thumb")).toHaveClass("bg-brand");
+      fireEvent.pointerDown(root, { button: 0, pointerId: 1, clientX: 20 });
+      expect(getThumb()).toHaveAttribute("aria-valuenow", "20");
+
+      fireEvent.pointerMove(root, { pointerId: 1, clientX: 65 });
+      expect(getThumb()).toHaveAttribute("aria-valuenow", "65");
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
     });
 
-    test("treats a non-finite value as unanswered", () => {
-      const { container } = render(<Slider {...defaultProps} value={Number.NaN} />);
+    test("tracks the readout while the answer waits", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+      stubGeometry(container);
+      const root = getSlot(container, "slider");
 
-      expect(getSlot(container, "slider-thumb")).toHaveClass("bg-input-bg");
+      fireEvent.pointerDown(root, { button: 0, pointerId: 1, clientX: 20 });
+      expect(container.querySelector("output")).toHaveTextContent("20");
+
+      fireEvent.pointerMove(root, { pointerId: 1, clientX: 65 });
+      expect(container.querySelector("output")).toHaveTextContent("65");
+    });
+
+    test("records each of two consecutive drags once", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+
+      drag(container, [10, 40]);
+      drag(container, [40, 75]);
+
+      expect(defaultProps.onChange.mock.calls.map((call) => call[0])).toEqual([40, 75]);
+    });
+
+    test("records nothing for a drag that ends where it began", () => {
+      const { container } = render(<Slider {...defaultProps} value={40} />);
+
+      drag(container, [40, 70, 40]);
+
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
     });
   });
 
   // -------------------------------------------------------------------------
-  // Selecting the value the thumb is parked at
+  // Unanswered state
   // -------------------------------------------------------------------------
 
-  /**
-   * An unanswered control's own value already sits at `min`, so an interaction asking for the minimum changes
-   * nothing and HTML - which fires `input` only on an actual change - reports nothing. These specs pin the
-   * recovery: once such an interaction finishes, the control reports the value it is holding. That is what
-   * makes the minimum selectable at all, and what makes a required slider completable.
-   */
+  describe("unanswered state", () => {
+    test("parks the thumb at the lower bound while unanswered", () => {
+      render(<Slider {...defaultProps} />);
+
+      expect(getThumb()).toHaveAttribute("aria-valuenow", "0");
+    });
+
+    test("parks the thumb at a non-zero lower bound while unanswered", () => {
+      render(<Slider {...defaultProps} min={10} max={50} />);
+
+      expect(getThumb()).toHaveAttribute("aria-valuenow", "10");
+    });
+
+    test("distinguishes an unanswered thumb from one answered with the lower bound", () => {
+      const { rerender } = render(<Slider {...defaultProps} />);
+      expect(getThumb().className).toContain("bg-input-bg");
+
+      rerender(<Slider {...defaultProps} value={0} />);
+
+      expect(getThumb().className).toContain("bg-brand");
+      expect(getThumb().className).not.toContain("bg-input-bg");
+    });
+
+    test.each([
+      ["undefined", undefined],
+      ["NaN", Number.NaN],
+      ["Infinity", Number.POSITIVE_INFINITY],
+    ] as [string, number | undefined][])("treats %s as unanswered", (_label, value) => {
+      const { container } = render(<Slider {...defaultProps} value={value} />);
+
+      expect(container.querySelector("output")).not.toBeInTheDocument();
+      expect(getThumb().className).toContain("bg-input-bg");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Selecting the parked value
+  //
+  // The primitive reports nothing when an interaction resolves to the value already held, so every
+  // interaction asking for the lower bound of an unanswered slider would otherwise go unrecorded.
+  // -------------------------------------------------------------------------
+
   describe("selecting the parked value", () => {
     test.each(["Home", "ArrowLeft", "ArrowDown", "PageDown"])(
-      "reports the minimum when a pristine control is asked for it with %s",
+      "records the lower bound when %s resolves to it",
       (key) => {
         render(<Slider {...defaultProps} />);
 
         pressKey(key);
 
+        expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
         expect(defaultProps.onChange).toHaveBeenCalledWith(0);
       }
     );
 
-    test("reports a minimum that is not zero, which is not a special case", () => {
-      render(<Slider {...defaultProps} min={10} max={50} step={5} />);
+    test("records a lower bound that is not zero, which is not a special case", () => {
+      render(<Slider {...defaultProps} min={10} max={50} />);
 
       pressKey("Home");
 
       expect(defaultProps.onChange).toHaveBeenCalledWith(10);
     });
 
-    test("reports a negative minimum", () => {
-      render(<Slider {...defaultProps} min={-50} max={-10} step={5} />);
+    test("records a negative lower bound", () => {
+      render(<Slider {...defaultProps} min={-40} max={40} step={10} />);
 
-      pressKey("ArrowLeft");
+      pressKey("Home");
 
-      expect(defaultProps.onChange).toHaveBeenCalledWith(-50);
+      expect(defaultProps.onChange).toHaveBeenCalledWith(-40);
     });
 
-    test("reports the minimum when a press lands on the control", () => {
+    test("records the lower bound when a press lands on the parked thumb", () => {
       render(<Slider {...defaultProps} />);
 
-      pressPointer();
+      pressThumb();
 
       expect(defaultProps.onChange).toHaveBeenCalledWith(0);
     });
 
-    test("reports the minimum while the required error is showing", () => {
-      // The respondent's way out of a rejected required slider is to select the minimum already in front of
-      // them, so this is the interaction that has to work for the error to be resolvable at all.
-      render(<Slider {...defaultProps} required errorMessage="Please fill out this field" />);
+    test("records the lower bound when a press lands on the track", () => {
+      const { container } = render(<Slider {...defaultProps} />);
 
-      pressKey("Home");
+      pressRoot(container);
 
       expect(defaultProps.onChange).toHaveBeenCalledWith(0);
     });
 
-    test("reports the minimum once, not once per event", () => {
+    test("records the lower bound while the required error is showing", () => {
+      render(<Slider {...defaultProps} required errorMessage="Please select a value" />);
+
+      pressThumb();
+
+      expect(defaultProps.onChange).toHaveBeenCalledWith(0);
+    });
+
+    test("records the lower bound once, not once per event", () => {
       render(<Slider {...defaultProps} />);
 
+      pressThumb();
       pressKey("Home");
+      pressThumb();
 
       expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
     });
 
-    test("reports a number, not a string", () => {
+    test("records a number, not a string", () => {
       render(<Slider {...defaultProps} />);
 
-      pressKey("Home");
+      pressThumb();
 
       expect(typeof defaultProps.onChange.mock.calls[0][0]).toBe("number");
     });
 
-    test.each(["Enter", " ", "Tab", "Escape"])(
-      "reports nothing for %s, which the control does not act on",
-      (key) => {
-        // `Enter` submits the surrounding form. Treating it as a selection would answer an untouched required
-        // slider with its minimum and defeat the required check the response contract depends on.
-        render(<Slider {...defaultProps} />);
+    test("records nothing for a release whose press began elsewhere", () => {
+      const { container } = render(<Slider {...defaultProps} />);
 
-        pressKey(key);
-
-        expect(defaultProps.onChange).not.toHaveBeenCalled();
-      }
-    );
-
-    test("reports nothing for a release whose press began elsewhere", () => {
-      render(<Slider {...defaultProps} />);
-
-      fireEvent.pointerUp(getControl(), { button: 0 });
+      fireEvent.pointerUp(getSlot(container, "slider"), { button: 0, pointerId: 1 });
 
       expect(defaultProps.onChange).not.toHaveBeenCalled();
     });
 
-    test("reports nothing for a press with a button the control ignores", () => {
+    test("records nothing for a press with a button the control ignores", () => {
       render(<Slider {...defaultProps} />);
 
-      pressPointer(2);
+      pressThumb(2);
 
       expect(defaultProps.onChange).not.toHaveBeenCalled();
     });
 
-    test("reports nothing after a press is cancelled", () => {
-      render(<Slider {...defaultProps} />);
-      const control = getControl();
+    test("records nothing after a press is cancelled", () => {
+      const { container } = render(<Slider {...defaultProps} />);
+      const root = getSlot(container, "slider");
 
-      fireEvent.pointerDown(control, { button: 0 });
-      fireEvent.pointerCancel(control);
-      fireEvent.pointerUp(control, { button: 0 });
+      fireEvent.pointerDown(root, { button: 0, pointerId: 1 });
+      fireEvent.pointerCancel(root, { pointerId: 1 });
+      fireEvent.pointerUp(root, { button: 0, pointerId: 1 });
 
       expect(defaultProps.onChange).not.toHaveBeenCalled();
     });
 
-    test("reports nothing when the control already holds the minimum", () => {
-      // Nothing to recover, and a second report would recharge time to completion for an answer already given.
+    test("records nothing for a press on the thumb of an answered control", () => {
+      render(<Slider {...defaultProps} value={40} />);
+
+      pressThumb();
+
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+
+    test("records nothing for a press on the thumb of a control answered with the lower bound", () => {
       render(<Slider {...defaultProps} value={0} />);
 
+      pressThumb();
+
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+
+    test("records nothing for a key that cannot move the thumb", () => {
+      // `Enter` submits the surrounding form, so treating it as a selection would silently answer an
+      // untouched required slider with its lower bound.
+      render(<Slider {...defaultProps} />);
+
+      pressKey("Enter");
+      pressKey(" ");
+      pressKey("Tab");
+
+      expect(defaultProps.onChange).not.toHaveBeenCalled();
+    });
+
+    test("records nothing while disabled", () => {
+      const { container } = render(<Slider {...defaultProps} disabled />);
+
+      pressThumb();
       pressKey("Home");
-      pressPointer();
+      pressRoot(container);
 
       expect(defaultProps.onChange).not.toHaveBeenCalled();
     });
 
-    test("reports nothing when the control already holds some other value", () => {
-      render(<Slider {...defaultProps} value={50} />);
+    test("does not record twice when the interaction moved the value itself", () => {
+      const { container } = render(<Slider {...defaultProps} />);
 
-      pressKey("ArrowLeft");
-      pressPointer();
-
-      expect(defaultProps.onChange).not.toHaveBeenCalled();
-    });
-
-    test("reports nothing while disabled", () => {
-      render(<Slider {...defaultProps} disabled />);
-
-      pressKey("Home");
-      pressPointer();
-
-      expect(defaultProps.onChange).not.toHaveBeenCalled();
-    });
-
-    test("does not report twice when the platform moved the value itself", () => {
-      // An interaction that did change the value is reported by the platform, and the recovery must not
-      // duplicate it: the answer arrives once, the control becomes answered, and the release adds nothing.
-      const { rerender } = render(<Slider {...defaultProps} />);
-
-      selectValue(25);
-      rerender(<Slider {...defaultProps} value={25} />);
-      pressKey("ArrowRight");
+      drag(container, [10, 60]);
 
       expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
-      expect(defaultProps.onChange).toHaveBeenCalledWith(25);
-    });
-
-    test("leaves the maximum to the platform, which was never parked on it", () => {
-      const { rerender } = render(<Slider {...defaultProps} />);
-
-      selectValue(100);
-      rerender(<Slider {...defaultProps} value={100} />);
-      pressKey("End");
-
-      expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
-      expect(defaultProps.onChange).toHaveBeenCalledWith(100);
+      expect(defaultProps.onChange).toHaveBeenCalledWith(60);
     });
   });
 
@@ -516,22 +684,21 @@ describe("Slider", () => {
 
   describe("readout", () => {
     test("renders the readout for the selected value by default", () => {
-      render(<Slider {...defaultProps} value={65} />);
+      const { container } = render(<Slider {...defaultProps} value={35} />);
 
-      expect(screen.getByText("65")).toBeInTheDocument();
+      expect(container.querySelector("output")).toHaveTextContent("35");
     });
 
     test("binds the readout to the control that produced the value", () => {
-      const { container } = render(<Slider {...defaultProps} value={65} />);
-      const readout = container.querySelector("output");
+      const { container } = render(<Slider {...defaultProps} value={35} />);
 
-      expect(readout).toHaveAttribute("for", "test-slider-input");
+      expect(container.querySelector("output")).toHaveAttribute("for", "test-slider-input");
     });
 
     test("does not render the readout when showValue is false", () => {
-      render(<Slider {...defaultProps} value={65} showValue={false} />);
+      const { container } = render(<Slider {...defaultProps} value={35} showValue={false} />);
 
-      expect(screen.queryByText("65")).not.toBeInTheDocument();
+      expect(container.querySelector("output")).not.toBeInTheDocument();
     });
 
     test("does not render the readout while unanswered", () => {
@@ -540,109 +707,108 @@ describe("Slider", () => {
       expect(container.querySelector("output")).not.toBeInTheDocument();
     });
 
-    test("renders a readout for the minimum, which is a real answer", () => {
-      render(<Slider {...defaultProps} value={0} />);
+    test("renders a readout for the lower bound, which is a real answer", () => {
+      const { container } = render(<Slider {...defaultProps} value={0} />);
 
-      expect(screen.getByText("0")).toBeInTheDocument();
+      expect(container.querySelector("output")).toHaveTextContent("0");
     });
 
     test("shows a decimal answer at its own precision", () => {
-      render(<Slider {...defaultProps} min={0} max={1} step={0.1} value={0.3} />);
+      const { container } = render(<Slider {...defaultProps} min={0} max={1} step={0.1} value={0.3} />);
 
-      expect(screen.getByText("0.3")).toBeInTheDocument();
+      expect(container.querySelector("output")).toHaveTextContent("0.3");
+    });
+
+    test("shows an answer above the maximum as the value it actually is", () => {
+      // The handle can only be drawn inside the track, but the readout is the answer on record: showing the
+      // clamped position instead would hide the very number the respondent has to correct while the shared
+      // evaluator reports it as out of range.
+      const { container } = render(<Slider {...defaultProps} value={140} errorMessage="Too high" />);
+
+      expect(container.querySelector("output")).toHaveTextContent("140");
+      expect(getThumb()).toHaveAttribute("aria-valuenow", "100");
+      expect(screen.getByText("Too high")).toBeInTheDocument();
+    });
+
+    test("shows an answer below the minimum as the value it actually is", () => {
+      const { container } = render(<Slider {...defaultProps} min={10} max={100} value={5} />);
+
+      expect(container.querySelector("output")).toHaveTextContent("5");
+      expect(getThumb()).toHaveAttribute("aria-valuenow", "10");
+    });
+
+    test("keeps the readout in the answered state when the value readout is suppressed", () => {
+      // Suppressing the readout must not change what counts as answered: the thumb still fills.
+      render(<Slider {...defaultProps} value={35} showValue={false} />);
+
+      expect(getThumb().className).toContain("bg-brand");
     });
   });
 
   // -------------------------------------------------------------------------
-  // Presentation driven from the value
+  // Presentation
   // -------------------------------------------------------------------------
 
   describe("presentation", () => {
-    test.each([
-      [0, "calc(0% - 0px)", "100%"],
-      [50, "calc(50% - 10px)", "50%"],
-      [100, "calc(100% - 20px)", "0%"],
-    ])("positions the thumb and the fill for the value %s", (value, thumbInset, rangeInsetEnd) => {
-      // The thumb travels `trackWidth - thumbWidth`, so a share of the width is offset by the same share of
-      // the thumb: that is what keeps the visible thumb under the platform's own thumb at both ends.
-      const { container } = render(<Slider {...defaultProps} value={value} />);
+    test("fills the track up to the selected value", () => {
+      const { container } = render(<Slider {...defaultProps} value={25} />);
 
-      expect(getSlot(container, "slider-thumb").style.insetInlineStart).toBe(thumbInset);
-      expect(getSlot(container, "slider-range").style.insetInlineEnd).toBe(rangeInsetEnd);
+      expect(getSlot(container, "slider-range").getAttribute("style") ?? "").toContain("right: 75%");
     });
 
-    test("measures the position from the minimum rather than from zero", () => {
-      const { container } = render(<Slider {...defaultProps} min={10} max={50} step={5} value={30} />);
+    test("measures the fill from the lower bound rather than from zero", () => {
+      const { container } = render(<Slider {...defaultProps} min={10} max={50} value={20} />);
 
-      expect(getSlot(container, "slider-thumb").style.insetInlineStart).toBe("calc(50% - 10px)");
+      // A quarter of the way along 10..50.
+      expect(getSlot(container, "slider-range").getAttribute("style") ?? "").toContain("right: 75%");
     });
 
-    test("parks the thumb at the start of the track while unanswered", () => {
+    test("leaves the track unfilled while unanswered", () => {
       const { container } = render(<Slider {...defaultProps} />);
 
-      expect(getSlot(container, "slider-thumb").style.insetInlineStart).toBe("calc(0% - 0px)");
-      expect(getSlot(container, "slider-range").style.insetInlineEnd).toBe("100%");
+      expect(getSlot(container, "slider-range").getAttribute("style") ?? "").toContain("right: 100%");
     });
 
-    test("positions a value stored above the maximum at the end of the track", () => {
-      // The presentation is driven from the prop, not read back from the input, so a value left over from an
-      // earlier submission is drawn where it belongs instead of being silently hidden.
-      const { container } = render(<Slider {...defaultProps} value={105} />);
+    test("positions the thumb at the selected value", () => {
+      const { container } = render(<Slider {...defaultProps} value={25} />);
 
-      expect(getSlot(container, "slider-thumb").style.insetInlineStart).toBe("calc(100% - 20px)");
-    });
-
-    test("positions a value stored below the minimum at the start of the track", () => {
-      const { container } = render(<Slider {...defaultProps} value={-5} />);
-
-      expect(getSlot(container, "slider-thumb").style.insetInlineStart).toBe("calc(0% - 0px)");
-    });
-
-    test("shows a value clamped into range in the readout", () => {
-      render(<Slider {...defaultProps} value={105} />);
-
-      expect(screen.getByText("100")).toBeInTheDocument();
-    });
-
-    test("resolves the position of a range whose span is not measurable", () => {
-      // An inverted or collapsed range is a configuration the element schema rejects, but the control must
-      // still render rather than divide by zero and write `NaN%` into the markup.
-      const { container } = render(<Slider {...defaultProps} min={10} max={10} value={10} />);
-
-      expect(getSlot(container, "slider-thumb").style.insetInlineStart).toBe("calc(0% - 0px)");
-      expect(container.innerHTML).not.toContain("NaN");
+      expect(getSlot(container, "slider-thumb").parentElement?.getAttribute("style") ?? "").toContain("25%");
     });
 
     test("styles the track and the fill from design tokens alone", () => {
       const { container } = render(<Slider {...defaultProps} value={50} />);
 
-      expect(getSlot(container, "slider-track")).toHaveClass(
-        "bg-input-bg",
-        "border-input-border",
-        "rounded-input"
-      );
-      expect(getSlot(container, "slider-range")).toHaveClass("bg-brand");
-      expect(getSlot(container, "slider-thumb")).toHaveClass("border-brand");
+      const track = getSlot(container, "slider-track");
+      expect(track.className).toContain("bg-input-bg");
+      expect(track.className).toContain("border-input-border");
+      expect(track.className).toContain("rounded-input");
+      expect(getSlot(container, "slider-range").className).toContain("bg-brand");
     });
 
-    test("keeps the handle a sibling of the control, which its focus affordance depends on", () => {
-      // `peer-*` variants compile to sibling selectors, so a handle nested any deeper than a sibling of
-      // the control silently loses its focus and hover rings - and because the control itself is
-      // transparent, that leaves a keyboard respondent with no focus indicator whatsoever.
-      const { container } = render(<Slider {...defaultProps} />);
+    test("styles the thumb from design tokens alone", () => {
+      render(<Slider {...defaultProps} value={50} />);
 
-      expect(getSlot(container, "slider-thumb").parentElement).toBe(getControl().parentElement);
+      expect(getThumb().className).toContain("border-brand");
+      expect(getThumb().className).toContain("bg-brand");
     });
 
-    test("gives the handle the focus and hover affordances the transparent control cannot show", () => {
-      const { container } = render(<Slider {...defaultProps} />);
+    test("gives the thumb the focus and hover affordances a respondent needs", () => {
+      render(<Slider {...defaultProps} />);
 
-      expect(getSlot(container, "slider-thumb")).toHaveClass(
-        "peer-focus-visible:ring-ring/50",
-        "peer-focus-visible:ring-[3px]",
-        "peer-hover:ring-brand-20",
-        "peer-hover:ring-2"
-      );
+      expect(getThumb().className).toContain("focus-visible:ring-ring/50");
+      expect(getThumb().className).toContain("hover:ring-brand-20");
+    });
+
+    test("keeps the thumb's DOM node stable once the primitive has resolved it", () => {
+      // The compat repair replaces the thumb node when the primitive fails to publish a value. A renderer
+      // that resolves it on the first pass must not pay for that, so the node must survive a re-render.
+      const { rerender } = render(<Slider {...defaultProps} value={20} />);
+      const before = getThumb();
+
+      rerender(<Slider {...defaultProps} value={40} />);
+
+      expect(getThumb()).toBe(before);
+      expect(getThumb()).toHaveAttribute("aria-valuenow", "40");
     });
   });
 
@@ -651,50 +817,52 @@ describe("Slider", () => {
   // -------------------------------------------------------------------------
 
   describe("disabled state", () => {
-    test("disables the platform control", () => {
-      render(<Slider {...defaultProps} disabled />);
+    test("marks the composition disabled", () => {
+      const { container } = render(<Slider {...defaultProps} disabled />);
 
-      expect(getControl()).toBeDisabled();
+      expect(getSlot(container, "slider")).toHaveAttribute("data-disabled");
+      expect(getSlot(container, "slider")).toHaveAttribute("aria-disabled", "true");
     });
 
     test("is enabled by default", () => {
-      render(<Slider {...defaultProps} />);
+      const { container } = render(<Slider {...defaultProps} />);
 
-      expect(getControl()).toBeEnabled();
+      expect(getSlot(container, "slider")).not.toHaveAttribute("data-disabled");
+      expect(getSlot(container, "slider")).toHaveAttribute("aria-disabled", "false");
     });
 
-    test("does not report a value while disabled", () => {
+    test("takes the thumb out of the tab order while disabled", () => {
       render(<Slider {...defaultProps} disabled />);
 
-      selectValue(50);
+      expect(getThumb()).not.toHaveAttribute("tabindex");
+    });
+
+    test("records nothing from a drag while disabled", () => {
+      const { container } = render(<Slider {...defaultProps} disabled />);
+
+      drag(container, [10, 60]);
 
       expect(defaultProps.onChange).not.toHaveBeenCalled();
     });
 
-    test("dims the presentation while disabled", () => {
+    test("dims the composition while disabled", () => {
       const { container } = render(<Slider {...defaultProps} disabled />);
 
-      // The handle is dimmed on its own account, because it sits alongside the layer rather than inside it.
-      expect(getSlot(container, "slider")).toHaveClass("opacity-50");
-      expect(getSlot(container, "slider-thumb")).toHaveClass("opacity-50");
-    });
-
-    test("withholds the hover affordance while disabled", () => {
-      const { container } = render(<Slider {...defaultProps} disabled />);
-
-      expect(getSlot(container, "slider-thumb")).not.toHaveClass("peer-hover:ring-2");
+      expect(getSlot(container, "slider").className).toContain("opacity-50");
     });
 
     test("withdraws the pointer affordance while disabled", () => {
-      render(<Slider {...defaultProps} disabled />);
+      const { container } = render(<Slider {...defaultProps} disabled />);
 
-      expect(getControl()).toHaveClass("cursor-not-allowed");
+      expect(getSlot(container, "slider").className).toContain("cursor-not-allowed");
+      expect(getThumb().className).not.toContain("hover:ring-brand-20");
     });
 
     test("advertises the pointer affordance while enabled", () => {
-      render(<Slider {...defaultProps} />);
+      const { container } = render(<Slider {...defaultProps} />);
 
-      expect(getControl()).toHaveClass("cursor-pointer");
+      expect(getSlot(container, "slider").className).toContain("cursor-pointer");
+      expect(getSlot(container, "slider").className).not.toContain("opacity-50");
     });
   });
 
@@ -711,9 +879,9 @@ describe("Slider", () => {
     });
 
     test("renders no label row when neither label is provided", () => {
-      render(<Slider {...defaultProps} />);
+      const { container } = render(<Slider {...defaultProps} />);
 
-      expect(screen.queryByText("Not at all")).not.toBeInTheDocument();
+      expect(container.querySelector(".justify-between")).not.toBeInTheDocument();
     });
 
     test("renders only the lower label when the upper one is absent", () => {
@@ -731,17 +899,15 @@ describe("Slider", () => {
     });
 
     test("anchors an upper-only label to the end of the row", () => {
-      // `justify-between` cannot place a lone child at the end, so the label pushes itself there with a
-      // logical margin that follows the writing direction.
       render(<Slider {...defaultProps} upperLabel="Extremely" />);
 
-      expect(screen.getByText("Extremely")).toHaveClass("ms-auto");
+      expect(screen.getByText("Extremely").className).toContain("ms-auto");
     });
 
     test("keeps the lower label at the start of the row", () => {
       render(<Slider {...defaultProps} lowerLabel="Not at all" />);
 
-      expect(screen.getByText("Not at all")).not.toHaveClass("ms-auto");
+      expect(screen.getByText("Not at all").className).not.toContain("ms-auto");
     });
   });
 
@@ -762,21 +928,19 @@ describe("Slider", () => {
       expect(screen.queryByText("Please select a value")).not.toBeInTheDocument();
     });
 
-    test("marks the control invalid and points it at the message", () => {
+    test("marks the thumb invalid and points it at the message", () => {
       render(<Slider {...defaultProps} errorMessage="Please select a value" />);
-      const control = getControl();
 
-      expect(control).toHaveAttribute("aria-invalid", "true");
-      expect(control).toHaveAttribute("aria-describedby", "test-slider-input-error");
+      expect(getThumb()).toHaveAttribute("aria-invalid", "true");
+      expect(getThumb()).toHaveAttribute("aria-describedby", "test-slider-input-error");
       expect(document.getElementById("test-slider-input-error")).toHaveTextContent("Please select a value");
     });
 
-    test("reports a valid control and describes nothing when there is no error", () => {
+    test("reports a valid thumb and describes nothing when there is no error", () => {
       render(<Slider {...defaultProps} />);
-      const control = getControl();
 
-      expect(control).not.toHaveAttribute("aria-invalid");
-      expect(control).not.toHaveAttribute("aria-describedby");
+      expect(getThumb()).not.toHaveAttribute("aria-invalid");
+      expect(getThumb()).not.toHaveAttribute("aria-describedby");
     });
   });
 
@@ -787,8 +951,7 @@ describe("Slider", () => {
   describe("required state", () => {
     test("shows the required indicator when required", () => {
       // Two copies by design: the header's visible marker, and the screen-reader-only description the
-      // control points at - the header's marker sits outside the label, so it is not announced with the
-      // control on its own.
+      // thumb points at - the header's marker sits outside the label, so it is not announced on its own.
       render(<Slider {...defaultProps} required />);
 
       expect(screen.getAllByText("Required")).toHaveLength(2);
@@ -806,12 +969,10 @@ describe("Slider", () => {
       expect(screen.queryByText("Required")).not.toBeInTheDocument();
     });
 
-    test("describes the required state on the control", () => {
-      // The header's marker sits outside the label, so it is not announced with the control; this
-      // description is what carries required-ness to assistive technology.
+    test("describes the required state on the thumb", () => {
       render(<Slider {...defaultProps} required />);
 
-      expect(getControl()).toHaveAttribute("aria-describedby", "test-slider-input-required");
+      expect(getThumb()).toHaveAttribute("aria-describedby", "test-slider-input-required");
       expect(document.getElementById("test-slider-input-required")).toHaveTextContent("Required");
     });
 
@@ -830,16 +991,18 @@ describe("Slider", () => {
     test("combines the required and error descriptions in reading order", () => {
       render(<Slider {...defaultProps} required errorMessage="Please select a value" />);
 
-      expect(getControl()).toHaveAttribute(
+      expect(getThumb()).toHaveAttribute(
         "aria-describedby",
         "test-slider-input-required test-slider-input-error"
       );
     });
 
-    test("omits aria-required, which ARIA does not define for the slider role", () => {
-      render(<Slider {...defaultProps} required />);
+    test("carries the required state on the root, not on the thumb", () => {
+      // ARIA does not define a required state for the `slider` role, so it stays off the thumb.
+      const { container } = render(<Slider {...defaultProps} required />);
 
-      expect(getControl()).not.toHaveAttribute("aria-required");
+      expect(getSlot(container, "slider")).toHaveAttribute("aria-required", "true");
+      expect(getThumb()).not.toHaveAttribute("aria-required");
     });
   });
 
@@ -848,23 +1011,31 @@ describe("Slider", () => {
   // -------------------------------------------------------------------------
 
   describe("accessibility", () => {
-    test("names the control with the headline through a real label association", () => {
+    test("names the thumb with the headline", () => {
       render(<Slider {...defaultProps} />);
 
-      expect(screen.getByRole("slider", { name: "How satisfied are you?" })).toBeInTheDocument();
+      expect(getThumb()).toHaveAttribute("aria-label", "How satisfied are you?");
     });
 
-    test("associates the label with the control id", () => {
+    test("associates the header label with the control id", () => {
       const { container } = render(<Slider {...defaultProps} />);
-      const label = container.querySelector('label[for="test-slider-input"]');
 
-      expect(label).toHaveTextContent("How satisfied are you?");
+      expect(container.querySelector('label[for="test-slider-input"]')).toBeInTheDocument();
+      expect(getSlot(container, "slider")).toHaveAttribute("id", "test-slider-input");
     });
 
-    test("keeps the control in the tab order", () => {
+    test("keeps the thumb in the tab order", () => {
       render(<Slider {...defaultProps} />);
 
-      expect(getControl()).not.toHaveAttribute("tabindex");
+      expect(getThumb()).toHaveAttribute("tabindex", "0");
+    });
+
+    test("focuses the thumb rather than a wrapper", () => {
+      render(<Slider {...defaultProps} />);
+
+      getThumb().focus();
+
+      expect(document.activeElement).toBe(getThumb());
     });
   });
 
@@ -879,24 +1050,26 @@ describe("Slider", () => {
       expect(container.querySelector("#test-slider")).toHaveAttribute("dir", "rtl");
     });
 
-    test("passes RTL direction through to the platform control, which inverts the track", () => {
-      render(<Slider {...defaultProps} dir="rtl" />);
+    test("hands RTL direction to the primitive, which inverts the track", () => {
+      const { container } = render(<Slider {...defaultProps} dir="rtl" value={25} />);
 
-      expect(getControl()).toHaveAttribute("dir", "rtl");
+      expect(getSlot(container, "slider")).toHaveAttribute("dir", "rtl");
+      // The fill grows from the right in RTL, so the same value anchors to the opposite edge.
+      expect(getSlot(container, "slider-range").getAttribute("style") ?? "").toContain("right: 0%");
     });
 
-    test("lets the control inherit direction when dir is auto", () => {
-      // The platform accepts only ltr or rtl, so `auto` is mapped to inheritance rather than passed on.
-      render(<Slider {...defaultProps} dir="auto" />);
+    test("lets the primitive resolve the direction when dir is auto", () => {
+      // "auto" is not a direction the primitive understands, so it is withheld and the primitive resolves
+      // left-to-right for itself rather than being handed a value it cannot read.
+      const { container } = render(<Slider {...defaultProps} dir="auto" />);
 
-      expect(getControl()).not.toHaveAttribute("dir");
+      expect(getSlot(container, "slider")).toHaveAttribute("dir", "ltr");
     });
 
-    test("defaults to inherited direction", () => {
+    test("defaults to the auto direction contract", () => {
       const { container } = render(<Slider {...defaultProps} />);
 
       expect(container.querySelector("#test-slider")).toHaveAttribute("dir", "auto");
-      expect(getControl()).not.toHaveAttribute("dir");
     });
   });
 
@@ -906,30 +1079,27 @@ describe("Slider", () => {
 
   describe("defensive rendering", () => {
     test.each([
-      ["a non-finite minimum", { min: Number.NEGATIVE_INFINITY, max: 100, step: 5, value: 50 }],
-      ["a non-finite maximum", { min: 0, max: Number.POSITIVE_INFINITY, step: 5, value: 50 }],
       ["an inverted range", { min: 100, max: 0, step: 5, value: 50 }],
       ["a collapsed range", { min: 5, max: 5, step: 5, value: 5 }],
       ["a non-finite step", { min: 0, max: 100, step: Number.POSITIVE_INFINITY, value: 50 }],
+      ["a negative step", { min: 0, max: 100, step: -5, value: 50 }],
       ["a NaN value", { min: 0, max: 100, step: 5, value: Number.NaN }],
     ] as [string, { min: number; max: number; step: number; value: number }][])(
-      "renders without writing NaN into the markup for %s",
+      "renders a single usable control for %s",
       (_label, props) => {
-        const { container } = render(<Slider {...defaultProps} {...props} />);
+        render(<Slider {...defaultProps} {...props} />);
 
-        expect(container.innerHTML).not.toContain("NaN");
         expect(screen.getAllByRole("slider")).toHaveLength(1);
+        expect(getThumb().getAttribute("style") ?? "").not.toContain("display: none");
       }
     );
 
     test("stays operable after a degraded configuration renders", () => {
-      // A non-finite bound makes the attribute invalid, so the platform falls back to its own default upper
-      // bound and the control keeps working - reporting an ordinary finite number rather than NaN.
-      render(<Slider {...defaultProps} max={Number.POSITIVE_INFINITY} />);
+      render(<Slider {...defaultProps} step={-5} />);
 
-      selectValue(50);
+      pressKey("ArrowRight");
 
-      expect(defaultProps.onChange).toHaveBeenCalledWith(50);
+      expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
       expect(Number.isFinite(defaultProps.onChange.mock.calls[0][0])).toBe(true);
     });
   });

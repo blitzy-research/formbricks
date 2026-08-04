@@ -3081,8 +3081,10 @@ const isInvalidOperatorsForElementType = (
         isInvalidOperator = true;
       }
       break;
-    // Mirrors Payment: the editor's logic-rule registry offers a slider exactly these two operators.
     case TSurveyElementTypeEnum.Slider:
+      // Mirrors Payment, and names its operators for the same reason every branch in this switch does: the
+      // schema - not the editor - is what guards a survey definition written through the management API, so
+      // the two operators the editor's logic-rule registry offers for a slider are the two accepted here.
       if (!["isSubmitted", "isSkipped"].includes(operator)) {
         isInvalidOperator = true;
       }
@@ -4344,11 +4346,7 @@ export const ZSurveyElementSummarySlider = z.object({
   type: z.literal(TSurveyElementTypeEnum.Slider),
   element: ZSurveySliderElement,
   responseCount: z.number(),
-  // `.finite()` mirrors the bounds and step of `ZSurveySliderElement`: a Slider's range is
-  // author-configured, so an aggregate computed over very large yet individually valid answers must
-  // still be a real number. Declaring the aggregation's finiteness here makes it a contract rather
-  // than an assumption of whichever component renders the value.
-  average: z.number().finite(),
+  average: z.number(),
   dismissed: z.object({
     count: z.number(),
   }),

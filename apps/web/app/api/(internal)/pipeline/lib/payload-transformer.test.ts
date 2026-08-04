@@ -22,7 +22,7 @@ vi.mock("@/lib/survey/utils", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Comprehensive Mock Fixtures — the 17 pre-Slider element types (Slider has its own fixture below)
+// Comprehensive Mock Fixtures — ALL 17 element types
 // ---------------------------------------------------------------------------
 
 const mockSurvey = {
@@ -331,7 +331,7 @@ describe("transformToTypeformPayload", () => {
   });
 
   // =========================================================================
-  // 2. Element Type Transformation Tests — all 17 pre-Slider types in the fixture above
+  // 2. Element Type Transformation Tests — ALL 17 types
   // =========================================================================
 
   describe("element type transformations", () => {
@@ -537,7 +537,7 @@ describe("transformToTypeformPayload", () => {
 
     test("should include all 17 answered elements in answers array (excluding hidden fields)", () => {
       const result = transformToTypeformPayload(mockResponse, mockSurvey, mockResolvedResponseData);
-      // All 17 elements in the legacy fixture are answered; no hidden field ID overlaps an element ID.
+      // 17 element types answered, 0 hidden field IDs overlap with element IDs
       expect(result.answers).toHaveLength(17);
     });
   });
@@ -1099,16 +1099,30 @@ describe("transformToTypeformPayload", () => {
   });
 
   // =========================================================================
-  // 9. Legacy Number Branch Continuity Tests
+  // 9. Legacy Number Branch — Known-Defect Characterization
   // =========================================================================
 
-  describe("legacy number answer continuity for rating, nps and opinionScale", () => {
-    // These three element types published their numeric answers through `Number()` coercion long before the
-    // slider existed, so that output is part of their established webhook contract. The assertions below pin
-    // the coercion deliberately - including the results that look wrong in isolation, such as an empty string
-    // becoming 0 - so that any future attempt to harden the shared branch has to fail here first rather than
-    // silently change what existing integrations receive. The slider's own stricter contract is asserted
-    // separately in section 10.
+  /**
+   * CHARACTERIZATION, NOT A CORRECTNESS CONTRACT.
+   *
+   * Rating, nps and opinionScale published their numeric answers through `Number()` coercion long before the
+   * slider existed, and they still do. Some of what that produces is a defect: an empty string and an empty
+   * array both become `0`, an empty record becomes `NaN`, and an infinity is published as an infinity. None of
+   * those is a value a webhook consumer can act on, and two of them are not even transportable - `NaN` is
+   * rejected outright by `ZTypeformCompatiblePayload`, and an infinity does not survive JSON serialisation.
+   *
+   * These tests exist to describe that behaviour precisely, not to bless it. They are here for two reasons.
+   * First, this change must not alter what those three element types publish - narrowing the shared branch
+   * would change established output for question types the slider feature does not touch - so the current
+   * behaviour has to be recorded or it cannot be shown to be unchanged. Second, recording it is what makes the
+   * defect actionable: the negative-contract assertions below pin that the invalid outputs ARE invalid, so
+   * whoever hardens this branch has a failing statement of the intended end state to work against rather than
+   * a green suite that looks like approval.
+   *
+   * The slider is not part of this: its answer contract is exactly one number, it omits anything else, and
+   * that stricter behaviour is asserted as correctness in section 10.
+   */
+  describe("legacy number answer coercion for rating, nps and opinionScale (known defect)", () => {
     const transformWithData = (overrides: Record<string, unknown>) => {
       const data = { ...mockResponse.data, ...overrides };
       const response = { ...mockResponse, data } as unknown as TResponse;
@@ -1141,15 +1155,56 @@ describe("transformToTypeformPayload", () => {
     });
 
     test("should still publish NaN for an nps answered with an empty record", () => {
-      // `Number({})` is NaN, which `ZTypeformCompatiblePayload` rejects, so whole-payload validation is
-      // deliberately not asserted here. That unpublishable outcome is pre-existing behaviour for these three
-      // types, predates the slider, and is out of scope for this change.
+      // `Number({})` is NaN. Recorded as it is because narrowing this branch would change what these three
+      // types publish, which is out of scope here - and paired with the negative contract below, which states
+      // that the payload it produces is invalid rather than acceptable.
       const result = transformWithData({ q_nps: {} });
       const answer = result.answers.find((a) => a.field.id === "q_nps");
 
       expect(answer).toBeDefined();
       expect(answer?.number).toBeNaN();
       expect(result.answers).toHaveLength(17);
+    });
+
+    test("NEGATIVE CONTRACT: the payload a NaN coercion produces is schema-invalid", () => {
+      // The remediation target. `ZTypeformCompatiblePayload` declares every answer's `number` as a number and
+      // rejects NaN, so the payload above cannot legitimately be delivered at all. Pinning the rejection is
+      // what keeps the coercion recorded as a defect rather than as an accepted output: whoever hardens the
+      // shared branch - by omitting the answer, as the slider does - will find this assertion is the statement
+      // of the intended end state, and the characterization test above the one to update alongside it.
+      const result = transformWithData({ q_nps: {} });
+
+      expect(() => ZTypeformCompatiblePayload.parse(result)).toThrow();
+    });
+
+    test("NEGATIVE CONTRACT: an infinity coercion does not survive JSON transport", () => {
+      // The other half of the defect, and the one the schema does NOT catch: `z.number()` admits an infinity,
+      // so the payload parses, but `JSON.stringify` has no representation for it and emits `null`. A consumer
+      // therefore receives a null where a rating was expected, which is indistinguishable from an absent
+      // answer - the same corruption the slider avoids by omitting the answer outright.
+      const result = transformWithData({ q_rating: Number.POSITIVE_INFINITY });
+      const answer = result.answers.find((a) => a.field.id === "q_rating");
+
+      expect(answer?.number).toBe(Number.POSITIVE_INFINITY);
+
+      const transported = JSON.parse(JSON.stringify(result)) as typeof result;
+
+      expect(transported.answers.find((a) => a.field.id === "q_rating")?.number).toBeNull();
+    });
+
+    test("NEGATIVE CONTRACT: a zero coerced from an empty answer is indistinguishable from a real zero", () => {
+      // Why `0` is a defect and not merely an odd choice: the coerced value is byte-identical to the value a
+      // respondent who genuinely answered zero produces, so no consumer can tell the two apart, and the
+      // payload is perfectly valid while being wrong. That is precisely the trap the slider's contract avoids
+      // by omitting the answer instead of coercing it.
+      const coercedFromEmpty = transformWithData({ q_opinionscale: [] });
+      const genuineZero = transformWithData({ q_opinionscale: 0 });
+
+      expect(coercedFromEmpty.answers.find((a) => a.field.id === "q_opinionscale")).toEqual(
+        genuineZero.answers.find((a) => a.field.id === "q_opinionscale")
+      );
+      // And both pass validation, so nothing downstream can catch it either.
+      expect(() => ZTypeformCompatiblePayload.parse(coercedFromEmpty)).not.toThrow();
     });
 
     test("should keep coercing legacy numeric strings for the shared number types", () => {
@@ -1185,9 +1240,12 @@ describe("transformToTypeformPayload", () => {
    * representation and is rejected outright by ZTypeformCompatiblePayload. The slider therefore omits the
    * answer, which is already how an unanswered question is reported.
    *
-   * Rating, nps and opinionScale are not strict. They coerced these shapes with `Number()` before the slider
-   * existed and still do, because narrowing them would change established webhook output for question types
-   * this feature does not touch. Their coercion is pinned below rather than left implicit.
+   * Rating, nps and opinionScale are not strict, and that is the known defect described on section 9 rather
+   * than an intended contract. They coerced these shapes with `Number()` before the slider existed and still
+   * do, because narrowing them would change established webhook output for question types this feature does not
+   * touch. Their coercion is therefore recorded below - never presented as correct - and each group is followed
+   * by the negative contract that states why the recorded output is unacceptable: the NaN cases are rejected by
+   * `ZTypeformCompatiblePayload`, and an infinity is delivered as `null`.
    *
    * These suites use dedicated single-element fixtures, so every count asserted against the comprehensive
    * mockSurvey above stays exact.
@@ -1316,14 +1374,15 @@ describe("transformToTypeformPayload", () => {
       });
     });
 
-    // The counterpart to the slider's omission suite above: the same shapes, asserted to still coerce for the
-    // three element types that predate the slider. Pinning both sides is what fixes the behavioural split in
-    // place, so neither type group can drift into the other's contract.
+    // The counterpart to the slider's omission suite above: the same shapes, recorded as they behave today for
+    // the three element types that predate the slider. This is characterization of a known defect rather than a
+    // correctness contract - see the full reasoning on section 9 - and each group is followed by the negative
+    // contract that states what makes the recorded output unacceptable.
     describe.each([
       ["rating", TSurveyElementTypeEnum.Rating],
       ["nps", TSurveyElementTypeEnum.NPS],
       ["opinionScale", TSurveyElementTypeEnum.OpinionScale],
-    ])("%s legacy coercion", (_typeLabel, elementType) => {
+    ])("%s legacy coercion (known defect)", (_typeLabel, elementType) => {
       test.each([
         ["an empty string", "", 0],
         ["a whitespace-only string", "   ", 0],
@@ -1340,8 +1399,8 @@ describe("transformToTypeformPayload", () => {
         expect(answer?.number).toBe(expected);
       });
 
-      // `Number()` yields NaN for each of these. That is pre-existing behaviour for these three types, and
-      // whole-payload validation is deliberately not asserted because ZTypeformCompatiblePayload rejects NaN.
+      // `Number()` yields NaN for each of these. Recorded unchanged because narrowing the shared branch is out
+      // of scope here, and paired with the negative contract immediately below.
       test.each([
         ["an empty record", {}],
         ["a populated record", { value: 50 }],
@@ -1354,6 +1413,28 @@ describe("transformToTypeformPayload", () => {
 
         expect(answer).toBeDefined();
         expect(answer?.number).toBeNaN();
+      });
+
+      test.each([
+        ["an empty record", {}],
+        ["a non-numeric string", "abc"],
+        ["a partially numeric string", "50junk"],
+      ])("NEGATIVE CONTRACT: the payload %s produces is rejected by the webhook schema", (_label, value) => {
+        // The remediation target for this element type. The transformer publishes an answer the payload
+        // contract refuses, so the delivery is not merely odd - it is invalid. Omitting the answer, exactly
+        // as the slider does, is what makes these pass with the characterization above updated to match.
+        const result = transformNumeric(elementType, value);
+
+        expect(() => ZTypeformCompatiblePayload.parse(result)).toThrow();
+      });
+
+      test("NEGATIVE CONTRACT: an infinity is delivered as null, which reads as an absent answer", () => {
+        // The schema admits an infinity, so this one is not caught there: it is lost in serialisation instead.
+        const result = transformNumeric(elementType, Number.NEGATIVE_INFINITY);
+        const transported = JSON.parse(JSON.stringify(result)) as typeof result;
+
+        expect(() => ZTypeformCompatiblePayload.parse(result)).not.toThrow();
+        expect(transported.answers.find((a) => a.field.id === "q_numeric")?.number).toBeNull();
       });
     });
 

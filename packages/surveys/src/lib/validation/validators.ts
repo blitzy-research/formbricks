@@ -385,15 +385,22 @@ export const validators: Record<TValidationRuleType, TValidator> = {
         return { valid: false };
       }
 
-      // Fail closed on params that cannot describe a grid. A grid needs a finite, strictly positive step
-      // and a finite origin; without them there is nothing to validate against, and returning valid would
-      // silently disable the constraint on the server for exactly the malformed configurations an attacker
-      // would aim for. The owning element schema rejects such a configuration with its own author-facing
-      // message, so a real survey never reaches this branch.
+      // A step that describes no grid describes no constraint, so the answer passes here rather than being
+      // rejected: configuration is the element schema's error to report, not this rule's. The schema rejects a
+      // non-positive step, a non-numeric one and an infinite one with its own author-facing message, and the
+      // evaluator refuses to inject these rules at all for a slider whose configuration it cannot read -
+      // rejecting the answer through its own configuration gate instead - so nothing an author can save
+      // reaches this branch with the constraint silently dropped. Deciding it here as well would report a
+      // configuration mistake as if it were the respondent's, on a value that may be perfectly valid.
       const { step, offset: rawOffset } = typedParams;
       if (typeof step !== "number" || !Number.isFinite(step) || step <= 0) {
-        return { valid: false };
+        return { valid: true };
       }
+
+      // The origin is not the same case. There is a grid to test against here, and an origin that is not a
+      // finite number places it nowhere, so the value cannot be shown to sit on it: measuring from a
+      // non-finite origin yields a distance that compares false against any tolerance. Rejecting is what
+      // keeps that outcome explicit rather than an artefact of arithmetic on NaN.
       if (rawOffset !== undefined && (typeof rawOffset !== "number" || !Number.isFinite(rawOffset))) {
         return { valid: false };
       }

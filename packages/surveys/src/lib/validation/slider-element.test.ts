@@ -186,9 +186,14 @@ describe("slider element acceptance criteria", () => {
 
     // `validateBlockResponses` is element-driven: it walks the elements it is handed and reads
     // `responses[element.id]`, so a key that was never submitted arrives as `undefined` and meets exactly the
-    // same required check an empty string meets. Pinning that here means the guarantee belongs to the shared
-    // engine rather than to any one caller's choice of element list, and every caller that hands the element
-    // over - the runtime renderer and every server route alike - inherits the rejection unchanged.
+    // same required check an empty string meets. That is a property of the shared engine, and it holds for any
+    // caller that hands the element over.
+    //
+    // It is deliberately NOT a claim about the server routes. The wrapper they call narrows the element list to
+    // the ids present in the submitted data before delegating here, so an omitted key never reaches this
+    // function through that path and completeness is enforced elsewhere. The production acceptance contract for
+    // an unanswered required slider is therefore the present-key case in the test above, not this one; this
+    // case exists so that the engine's own behaviour is pinned independently of who calls it.
     const absentKey = validateBlockResponses([element], {}, "en");
 
     expect(Object.keys(absentKey)).toEqual([SLIDER_ELEMENT_ID]);
@@ -430,6 +435,42 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
       path: ["step"],
       message: "Step cannot be larger than the range",
     },
+    // --- The numeric domain: bounds and step must be finite, and so must the span they describe --
+    {
+      // Each bad bound is named individually, so the message points at the field the author typed rather
+      // than at the pair.
+      label: "an infinite minimum",
+      range: { min: Number.NEGATIVE_INFINITY, max: 100 },
+      step: 5,
+      path: ["range", "min"],
+      message: "Minimum value must be a finite number",
+    },
+    {
+      label: "an infinite maximum",
+      range: { min: 0, max: Number.POSITIVE_INFINITY },
+      step: 5,
+      path: ["range", "max"],
+      message: "Maximum value must be a finite number",
+    },
+    {
+      // Both bounds are numbers the author could have typed, so the complaint is about the pair rather
+      // than about either one of them.
+      label: "two finite bounds whose span overflows",
+      range: { min: -1e308, max: 1e308 },
+      step: 5,
+      path: ["range"],
+      message: "The range between the minimum and the maximum is too wide",
+    },
+    {
+      // A step has to be a finite number greater than zero, and an infinite one is neither a grid nor a
+      // number the author can correct by narrowing it - so it is reported as the same single mistake a
+      // zero or negative step is, pointed at the field they typed.
+      label: "an infinite step",
+      range: { min: 0, max: 100 },
+      step: Number.POSITIVE_INFINITY,
+      path: ["step"],
+      message: "Step must be greater than zero",
+    },
   ];
 
   test.each(rejectionCases)("should reject $label", ({ range, step, path, message }) => {
@@ -465,19 +506,30 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
     ]);
   });
 
-  test("should reject an infinite step through the span guard", () => {
-    // The frozen contract constrains the step's sign and its size against the span, and an infinite step
-    // is caught by the latter - so the author still gets one message, pointed at the field they typed.
-    const parsed = parseSliderConfig({ range: { min: 0, max: 100 }, step: Number.POSITIVE_INFINITY });
+  test("should be refused by the server as well when such a configuration is already persisted", () => {
+    // The schema is only reached by a survey saved through the editor's validated path; the draft autosave
+    // path persists an element without it. So a step wider than its span can reach a live survey, and the
+    // one value its degenerate grid contains - the minimum - is the answer that would otherwise be accepted
+    // and stored. Both entrypoints every response route reaches must refuse it.
+    const malformed = {
+      id: SLIDER_ELEMENT_ID,
+      type: TSurveyElementTypeEnum.Slider,
+      headline: { default: "Pick a value" },
+      required: true,
+      range: { min: 0, max: 10 },
+      step: 20,
+    } as unknown as TSurveySliderElement;
 
-    expect(parsed.success).toBe(false);
-    if (parsed.success) {
-      throw new Error("Expected the configuration to be rejected, but it parsed successfully.");
-    }
+    expect(parseSliderConfig({ range: { min: 0, max: 10 }, step: 20 }).success).toBe(false);
 
-    expect(parsed.error.issues).toHaveLength(1);
-    expect(parsed.error.issues[0].path).toEqual(["step"]);
-    expect(parsed.error.issues[0].message).toBe("Step cannot be larger than the range");
+    const single = validateElementResponse(malformed, 0, "en");
+    expect(single.valid).toBe(false);
+    expect(single.errors.map((error) => error.ruleId)).toEqual(["sliderConfiguration"]);
+    expect(single.errors[0].message).toBe("errors.invalid_format");
+
+    const errorMap = validateBlockResponses([malformed], { [SLIDER_ELEMENT_ID]: 0 }, "en");
+    expect(Object.keys(errorMap)).toEqual([SLIDER_ELEMENT_ID]);
+    expect(errorMap[SLIDER_ELEMENT_ID].map((error) => error.ruleId)).toEqual(["sliderConfiguration"]);
   });
 
   test("should reject a NaN bound or step, which `z.number()` refuses on its own", () => {
@@ -487,22 +539,75 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
     expect(parseSliderConfig({ range: { min: 0, max: 100 }, step: Number.NaN }).success).toBe(false);
   });
 
-  test("should admit an infinite bound and leave the grid rule to fail closed on it", () => {
-    // The frozen contract states the bounds as plain numbers, so an infinite bound - reachable only
-    // through the management API, never through the editor - is a lawful configuration. It is recorded
-    // here because the safety property that matters is downstream: the grid rule this element injects
-    // takes its origin from `range.min`, and a non-finite origin makes it reject rather than silently
-    // stop constraining.
-    const parsed = parseSliderConfig({ range: { min: Number.NEGATIVE_INFINITY, max: 100 }, step: 5 });
+  /**
+   * One numeric domain, agreed across the entry points that read it.
+   *
+   * The schema owns the configuration, so it is the schema that decides what a representable slider is. The
+   * response evaluator reads the same three facts before injecting the range and grid rules, and the two must
+   * agree in BOTH directions: a configuration the schema accepts must be one the evaluator can check answers
+   * against, or an author could save a slider that rejects every answer submitted to it; and a configuration
+   * the schema refuses must be one the evaluator fails closed on, because such an element can still reach the
+   * runtime through the editor's draft autosave path, which does not parse the element schema.
+   *
+   * These cases exercise the boundary itself rather than the ordinary domain, which is covered above.
+   */
+  describe("the schema and the response evaluator share one numeric domain", () => {
+    const buildSliderWithConfig = (config: {
+      range: { min: number; max: number };
+      step: number;
+    }): TSurveySliderElement =>
+      ({
+        id: SLIDER_ELEMENT_ID,
+        type: TSurveyElementTypeEnum.Slider,
+        headline: { default: "Pick a value" },
+        required: true,
+        ...config,
+      }) as unknown as TSurveySliderElement;
 
-    expect(parsed.success).toBe(true);
-    expect(
-      validators.stepMultipleOf.check(
-        50,
-        { step: 5, offset: Number.NEGATIVE_INFINITY },
-        {} as TSurveySliderElement
-      ).valid
-    ).toBe(false);
+    const unrepresentableConfigs: { label: string; range: { min: number; max: number }; step: number }[] = [
+      { label: "an infinite minimum", range: { min: Number.NEGATIVE_INFINITY, max: 100 }, step: 5 },
+      { label: "an infinite maximum", range: { min: 0, max: Number.POSITIVE_INFINITY }, step: 5 },
+      { label: "a span that overflows", range: { min: -1e308, max: 1e308 }, step: 5 },
+      { label: "an infinite step", range: { min: 0, max: 100 }, step: Number.POSITIVE_INFINITY },
+      { label: "a step wider than the span", range: { min: 0, max: 10 }, step: 20 },
+    ];
+
+    test.each(unrepresentableConfigs)(
+      "rejects $label at the schema and fails closed at the evaluator",
+      ({ range, step }) => {
+        expect(parseSliderConfig({ range, step }).success).toBe(false);
+
+        // A submitted answer is refused rather than passed through unconstrained, and with a validation
+        // error rather than the TypeError an unguarded configuration read would raise.
+        const result = validateElementResponse(buildSliderWithConfig({ range, step }), 50, "en");
+
+        expect(result.valid).toBe(false);
+        expect(result.errors.some((error) => error.ruleId === "sliderConfiguration")).toBe(true);
+      }
+    );
+
+    test.each([
+      { label: "the reference grid", range: { min: 0, max: 100 }, step: 5, value: 50 },
+      { label: "a grid at the representable extremes", range: { min: -1e308, max: 1e308 / 2 }, step: 5e307 },
+      { label: "a grid offset from zero", range: { min: 10, max: 50 }, step: 5, value: 15 },
+    ] as { label: string; range: { min: number; max: number }; step: number; value?: number }[])(
+      "accepts $label at the schema and checks answers against it at the evaluator",
+      ({ range, step, value }) => {
+        expect(parseSliderConfig({ range, step }).success).toBe(true);
+
+        const element = buildSliderWithConfig({ range, step });
+        const onGrid = value ?? range.min;
+
+        expect(validateElementResponse(element, onGrid, "en").valid).toBe(true);
+        // The configuration is trusted, so the rules that constrain the answer are the injected ones -
+        // never the structural "this element cannot be checked" refusal.
+        const aboveMaximum = validateElementResponse(element, range.max + step, "en");
+
+        expect(aboveMaximum.valid).toBe(false);
+        expect(aboveMaximum.errors.some((error) => error.ruleId === "sliderConfiguration")).toBe(false);
+        expect(aboveMaximum.errors.some((error) => error.ruleType === "maxValue")).toBe(true);
+      }
+    );
   });
 
   // Positive controls. Without these the table above could be satisfied by a schema that rejects
@@ -528,16 +633,24 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
 
 /**
  * The grid rule is a security constraint: it is what rejects an off-grid value posted straight to a
- * response endpoint, bypassing the browser control entirely. The validator reaches its `step` and
- * `offset` through a cast, and `params` is a plain, non-discriminated union - `{ min: 1 }` satisfies it
- * through the `minValue` member - so a rule persisted with another rule's params can reach the grid
- * validator carrying no usable step at all.
+ * response endpoint, bypassing the browser control entirely. That makes it worth being exact about which
+ * layer answers which question, because the rule is deliberately not the one that answers all of them.
  *
- * The validator is therefore the layer that has to fail closed, and these cases hold it to that: the
- * element schema constrains only its own fields, and no schema stands between a database column and the
- * cast the validator performs.
+ * A step that describes no grid is a CONFIGURATION mistake, and the frozen contract assigns it to the
+ * layers that own configuration rather than to this rule: the element schema rejects it with an
+ * author-facing message, and the evaluator refuses to inject these rules at all for a slider whose
+ * configuration it cannot read, rejecting the submitted answer through its own configuration gate instead.
+ * The rule therefore passes such an answer through - it has no grid to judge it against, and reporting a
+ * configuration mistake as if it were the respondent's would be wrong on a value that may be entirely
+ * valid. The suite below pins that division, and then pins the layers that DO reject the configuration, so
+ * the constraint provably has not gone missing.
+ *
+ * The origin is a different question with a different answer. There, a grid does exist and an origin that
+ * is not a finite number simply places it nowhere, so the value cannot be shown to sit on it and the rule
+ * rejects. Both halves are asserted here because `params` is a plain, non-discriminated union - `{ min: 1 }`
+ * satisfies it through the `minValue` member - so either shape genuinely can reach the validator's cast.
  */
-describe("stepMultipleOf fails closed on params that describe no grid", () => {
+describe("stepMultipleOf defers a step that describes no grid to the configuration layers", () => {
   test.each([
     ["params carrying no step at all", {}],
     ["params carrying another rule's key instead of a step", { min: 1 }],
@@ -546,11 +659,22 @@ describe("stepMultipleOf fails closed on params that describe no grid", () => {
     ["an infinite step", { step: Number.POSITIVE_INFINITY }],
     ["a negatively infinite step", { step: Number.NEGATIVE_INFINITY }],
     ["a NaN step", { step: Number.NaN }],
+  ] as [string, unknown][])("should pass an answer judged against %s", (_label, params) => {
+    const result = validators.stepMultipleOf.check(
+      50,
+      params as TValidationRuleParams,
+      {} as TSurveySliderElement
+    );
+
+    expect(result.valid).toBe(true);
+  });
+
+  test.each([
     ["an infinite offset beside a valid step", { step: 5, offset: Number.POSITIVE_INFINITY }],
     ["a NaN offset beside a valid step", { step: 5, offset: Number.NaN }],
   ] as [string, unknown][])("should reject an answer judged against %s", (_label, params) => {
-    // 50 is on the grid of every well-formed variant of these params, so a `true` here could only mean
-    // the constraint had stopped being applied at all.
+    // 50 is on the grid of every well-formed variant of these params, so a `true` here could only mean the
+    // grid had been placed somewhere the value happened to land rather than measured from a real origin.
     const result = validators.stepMultipleOf.check(
       50,
       params as TValidationRuleParams,
@@ -568,9 +692,29 @@ describe("stepMultipleOf fails closed on params that describe no grid", () => {
     expect(validators.stepMultipleOf.check(50, params, {} as TSurveySliderElement).valid).toBe(true);
   });
 
+  test("should still reject the whole answer when the element's own step describes no grid", () => {
+    // Where the deferral goes. A slider carrying a step the schema would never have accepted is not left
+    // unconstrained: the evaluator reads the configuration first, cannot trust it, and rejects the submitted
+    // value outright rather than injecting three rules derived from numbers it does not believe. The value
+    // used here is on the intended 0..100 grid, so the rejection is attributable to the configuration alone.
+    const brokenElement = { ...buildSliderElement(), step: 0 } as TSurveySliderElement;
+
+    const result = validateElementResponse(brokenElement, 50, "en");
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].ruleId).toBe("sliderConfiguration");
+    expect(result.errors[0].message).toBe("errors.invalid_format");
+
+    // ...and the same element cannot be saved in the first place, which is the layer that reports the mistake
+    // to the author in terms they can act on.
+    expect(ZSurveySliderElement.safeParse(brokenElement).success).toBe(false);
+  });
+
   test("should leave the rule list schema exactly as permissive as it was", () => {
     // `ZValidationRules` is an unrefined array, as it is for every other rule type: the pairing is not
-    // enforced there, which is precisely why the validator above must fail closed.
+    // enforced there, which is why the validator has to answer for mismatched params at all - by deferring a
+    // missing grid to the configuration layers above, and by rejecting an unplaceable origin itself.
     expect(
       ZValidationRules.safeParse([{ id: "grid-rule", type: "stepMultipleOf", params: { min: 1 } }]).success
     ).toBe(true);

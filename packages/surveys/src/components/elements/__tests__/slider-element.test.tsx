@@ -488,10 +488,10 @@ describe("SliderElement", () => {
       expect(setTtc).toHaveBeenCalledWith({ s1: 700 });
     });
 
-    test("does not re-charge the elapsed time for every value a drag reports", () => {
-      // `getUpdatedTtc` ADDS the duration it is handed, and a drag reports many values, so billing the
-      // whole time since mount each time would charge one interaction as if it were several. The start
-      // time is reset as each value is billed, so the values after the first cost nothing.
+    test("does not re-charge the elapsed time once per answer", () => {
+      // `getUpdatedTtc` ADDS the duration it is handed, so billing the whole time since mount for every
+      // answer would charge several interactions as if each had lasted the element's whole lifetime. The
+      // segment advances as each answer is billed, so answers after the first cost only their own time.
       const setTtc = vi.fn();
       render(<SliderElement {...defaultProps} ttc={{ s1: 200 } as TResponseTtc} setTtc={setTtc} />);
       vi.spyOn(performance, "now").mockReturnValue(1500);
@@ -502,8 +502,8 @@ describe("SliderElement", () => {
       expect(mockGetUpdatedTtc.mock.calls.map((call) => call[2])).toEqual([500, 0, 0]);
     });
 
-    test("bills a drag as one continuous span rather than as overlapping ones", () => {
-      // The durations billed across a whole drag must add up to the time the drag actually took: every
+    test("bills consecutive answers as one continuous span rather than as overlapping ones", () => {
+      // The durations billed across a series of answers must add up to the time they actually took: every
       // segment starts where the previous one ended, so no instant is billed twice or lost.
       const setTtc = vi.fn();
       render(<SliderElement {...defaultProps} ttc={{} as TResponseTtc} setTtc={setTtc} />);
@@ -519,9 +519,38 @@ describe("SliderElement", () => {
       expect(billed.reduce((total, duration) => total + duration, 0)).toBe(600);
     });
 
+    test("bills exactly one segment per answer", () => {
+      const setTtc = vi.fn();
+      render(<SliderElement {...defaultProps} setTtc={setTtc} />);
+
+      fireEvent.click(screen.getByTestId("select-fifty"));
+
+      expect(mockGetUpdatedTtc).toHaveBeenCalledTimes(1);
+      expect(setTtc).toHaveBeenCalledTimes(1);
+    });
+
+    test("holds the segment in a ref, leaving the tracking hook's registration untouched", () => {
+      // Writing the segment start as state would hand `useTtc` a new `startTime` on every answer, and its
+      // `visibilitychange` effect would tear down and re-register a listener that had not changed.
+      const setTtc = vi.fn();
+      render(<SliderElement {...defaultProps} setTtc={setTtc} />);
+      const startTimeOnMount = mockUseTtc.mock.calls[0][3];
+
+      vi.spyOn(performance, "now").mockReturnValue(1500);
+      fireEvent.click(screen.getByTestId("select-fifty"));
+      vi.spyOn(performance, "now").mockReturnValue(1900);
+      fireEvent.click(screen.getByTestId("select-max"));
+
+      for (const call of mockUseTtc.mock.calls) {
+        expect(call[3]).toBe(startTimeOnMount);
+      }
+      // The billing still advances, which is what proves the ref - not the unchanged state - carries it.
+      expect(mockGetUpdatedTtc.mock.calls.map((call) => call[2])).toEqual([500, 400]);
+    });
+
     test("starts a new segment at the instant the previous one closed", () => {
       // One clock reading closes the finished segment and opens the next, so the instant between two
-      // selections is neither billed twice nor lost.
+      // answers is neither billed twice nor lost.
       const setTtc = vi.fn();
       render(<SliderElement {...defaultProps} ttc={{} as TResponseTtc} setTtc={setTtc} />);
       vi.spyOn(performance, "now").mockReturnValue(1400);

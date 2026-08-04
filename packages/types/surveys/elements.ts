@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ZStorageUrl, ZUrl } from "../common";
 import { ZI18nString } from "../i18n";
 import { ZAllowedFileExtension } from "../storage";
-import { TSurveyElementTypeEnum } from "./constants";
+import { TSurveyElementTypeEnum, parseSurveySliderConfiguration } from "./constants";
 import { FORBIDDEN_IDS } from "./validation";
 import { ZValidationRules } from "./validation-rules";
 
@@ -14,8 +14,18 @@ import { ZValidationRules } from "./validation-rules";
  *
  * However, we re-export it here so that most consumers (who also need the Zod schemas)
  * can import everything from a single file (`elements.ts`).
+ *
+ * `parseSurveySliderConfiguration` lives there for the same reason and is re-exported for the same
+ * convenience: it is the canonical definition of a usable slider configuration, shared by the schema below
+ * and by the respondent runtime's response evaluator, and the runtime must be able to reach it without
+ * pulling every Zod schema in this file into its bundle.
  */
-export { TSurveyElementTypeEnum };
+export { TSurveyElementTypeEnum, parseSurveySliderConfiguration };
+export type {
+  TSurveySliderConfiguration,
+  TSurveySliderConfigurationIssue,
+  TSurveySliderConfigurationResult,
+} from "./constants";
 
 // Element ID validation (same rules as questions - USER EDITABLE)
 export const ZSurveyElementId = z.string().superRefine((id, ctx) => {
@@ -385,31 +395,18 @@ export const ZSurveySliderElement = ZSurveyElementBase.extend({
   upperLabel: ZI18nString.optional(),
   showValue: z.boolean().optional().default(true),
 }).superRefine((data, ctx) => {
-  if (data.range.min >= data.range.max) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Minimum value must be less than the maximum value",
-      path: ["range"],
-    });
+  // The single source of truth for what makes a slider usable, shared with the response evaluator so the two
+  // can never disagree about which configurations are trustworthy.
+  const result = parseSurveySliderConfiguration(data);
+  if (result.valid) {
+    return;
   }
 
-  if (data.step <= 0) {
+  for (const issue of result.issues) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "Step must be greater than zero",
-      path: ["step"],
-    });
-  }
-
-  // Guarded so it only evaluates once the bounds and the step are individually valid, otherwise the author
-  // would see two errors for a single mistake.
-  if (data.range.min < data.range.max && data.step > 0 && data.step > data.range.max - data.range.min) {
-    // A step wider than the range would leave only the minimum selectable, which is a configuration error
-    // the author should see in the editor rather than discover from respondents.
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Step cannot be larger than the range",
-      path: ["step"],
+      message: issue.message,
+      path: issue.path,
     });
   }
 });
