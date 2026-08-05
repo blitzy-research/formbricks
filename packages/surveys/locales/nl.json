@@ -9,6 +9,7 @@
     "finish": "Voltooien",
     "language_switch": "Taalschakelaar",
     "next": "Volgende",
+    "no_value_selected": "Geen waarde geselecteerd",
     "open_in_new_tab": "Openen in nieuw tabblad",
     "people_responded": "{count, plural, one {1 persoon heeft gereageerd} other {{count} mensen hebben gereageerd}}",
     "please_retry_now_or_try_again_later": "Probeer het nu opnieuw of probeer het later opnieuw.",

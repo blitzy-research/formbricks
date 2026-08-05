@@ -167,6 +167,10 @@ export function SliderElement({
         showValue={element.showValue}
         required={isRequired}
         requiredLabel={t("common.required")}
+        // Announced in place of the parked position while nothing has been answered, so that a screen-reader
+        // user is told "unanswered" rather than the lower bound - the same distinction the unfilled handle
+        // makes visually, and the one the required check depends on.
+        unansweredLabel={t("common.no_value_selected")}
         dir={dir}
         imageUrl={element.imageUrl}
         videoUrl={element.videoUrl}

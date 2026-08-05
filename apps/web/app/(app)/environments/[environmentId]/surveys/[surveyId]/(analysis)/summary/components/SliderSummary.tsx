@@ -25,10 +25,14 @@ export const SliderSummary = ({ elementSummary, survey }: SliderSummaryProps) =>
 
   const { min, max } = elementSummary.element.range;
   const { average } = elementSummary;
-  // The aggregation publishes a finite mean, and the summary schema requires one, so this only guards a
-  // summary read back from an older cache or assembled by hand: `ProgressBar` clamps its own progress into
-  // [0, 1], but a NaN would still reach the markup as `width: NaN%`.
-  const position = (average - min) / (max - min);
+  const span = max - min;
+  // Measured from `min`, so an offset range reports the mean's place in the range the author configured
+  // rather than its distance from zero. The aggregation publishes a finite mean and the summary schema
+  // requires one, so the two guards below only cover a summary read back from an older cache or assembled
+  // by hand, and an element that reached this page without passing the schema - the editor's draft autosave
+  // path - where a collapsed range would divide by zero. `ProgressBar` clamps its own progress into [0, 1],
+  // but a NaN would still reach the markup as `width: NaN%`.
+  const position = span > 0 ? (average - min) / span : 0;
   const normalized = Number.isFinite(position) ? position : 0;
 
   return (

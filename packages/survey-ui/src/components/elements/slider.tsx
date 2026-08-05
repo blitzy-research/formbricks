@@ -1,9 +1,20 @@
 import * as SliderPrimitive from "@radix-ui/react-slider";
+import DOMPurify from "isomorphic-dompurify";
 import * as React from "react";
 import { ElementError } from "@/components/general/element-error";
 import { ElementHeader } from "@/components/general/element-header";
 import { Label } from "@/components/general/label";
 import { cn } from "@/lib/utils";
+
+/**
+ * Fallback announcement for a control nobody has answered yet.
+ *
+ * The handle has to be drawn somewhere, so an unanswered control parks it at `min` and the primitive publishes
+ * `min` as its value. Visually the unfilled handle is what says "not answered"; `aria-valuetext` is what says
+ * the same thing to a respondent who cannot see it. The caller supplies the translated wording, so this only
+ * covers a consumer that supplies none.
+ */
+const DEFAULT_UNANSWERED_LABEL = "No value selected";
 
 /**
  * Grid used when the configuration describes no usable one.
@@ -36,6 +47,61 @@ const VALUE_ADJUSTING_KEYS = new Set([
   "Home",
   "End",
 ]);
+
+/**
+ * Classes on the selected-value readout.
+ *
+ * Written as one literal, and deliberately not composed through `cn`: that helper merges classes it reads
+ * as setting the same property, and it cannot tell this design system's two font tokens apart - it treats
+ * `font-input-weight` as another font family and drops `font-input`. Hiding the readout appends to this
+ * instead of merging with it, which nothing here conflicts with.
+ */
+const READOUT_CLASS = "text-input-text font-input font-input-weight mb-2 block text-center";
+
+/**
+ * Elements whose boundary is read as a pause rather than as nothing at all.
+ *
+ * A headline authored on more than one line is stored as one element per line, and flattening it would
+ * otherwise join the last word of one line to the first word of the next.
+ */
+const TEXT_BOUNDARY_ELEMENTS = "address,blockquote,br,div,h1,h2,h3,h4,h5,h6,li,ol,p,pre,section,table,tr,ul";
+
+/**
+ * Flattens a headline to the plain text a person actually reads.
+ *
+ * The headline is authored with a rich-text editor and stored as markup, which the label renders as
+ * sanitized HTML. An accessible name, by contrast, is a plain string that assistive technology reads out
+ * verbatim, so the markup has to come off first: handed the stored string directly, a screen reader
+ * announces every tag, class and attribute, and a headline containing a script would have its source read
+ * aloud. Sanitizing before reading the text is what removes the second case entirely - the elements
+ * DOMPurify drops take their content with them - and reading `textContent` rather than stripping tags by
+ * hand is what resolves character references to the characters they stand for.
+ *
+ * Returns an empty string for a headline that carries no readable text, so the caller can leave the name
+ * off rather than publish an empty one.
+ */
+const toPlainText = (html: string): string => {
+  const collapsed = html.replace(/\s+/g, " ").trim();
+  // Neither markup nor a character reference: this is already the text a person reads, and parsing it
+  // would only cost a document on every headline in the overwhelmingly common case.
+  if (!collapsed || !/[<&]/.test(collapsed)) return collapsed;
+
+  try {
+    const sanitized = DOMPurify.sanitize(collapsed, { FORBID_ATTR: ["style"] });
+    // Parsed rather than pattern-matched, for the same reason the labels are: a parser is the only thing
+    // that reads markup the way a browser does. The document is inert - nothing in it runs or loads.
+    const { body } = new DOMParser().parseFromString(sanitized, "text/html");
+    for (const boundary of Array.from(body.querySelectorAll(TEXT_BOUNDARY_ELEMENTS))) {
+      boundary.before(" ");
+    }
+
+    return (body.textContent ?? "").replace(/\s+/g, " ").trim();
+  } catch {
+    // No document to parse with. Reporting no name is the safe outcome: the alternative is announcing the
+    // markup, which is the very thing this exists to prevent.
+    return "";
+  }
+};
 
 /**
  * Decimal places a number needs, including the magnitudes JavaScript prints in exponential notation.
@@ -91,8 +157,14 @@ interface SliderProps {
   showValue?: boolean;
   /** Whether the field is required (shows required indicator). Defaults to `false` */
   required?: boolean;
-  /** Custom label for the required indicator. Defaults to `"Required"` */
+  /** Custom label for the required indicator */
   requiredLabel?: string;
+  /**
+   * Announcement used in place of the value while the control is unanswered, so that "not answered yet" and
+   * "answered with the lower bound" are as distinguishable to assistive technology as they are on screen.
+   * Defaults to `"No value selected"`
+   */
+  unansweredLabel?: string;
   /** Error message to display */
   errorMessage?: string;
   /** Text direction. Defaults to `"auto"`, which inherits the direction from the surrounding document */
@@ -110,23 +182,29 @@ interface SliderProps {
  *
  * Configuration. `min` must be less than `max`, and `step` must be greater than `0` and no wider than
  * `max - min`; the survey schema rejects a configuration that breaks either rule. The selectable values are
- * `min + n * step`, so the grid is anchored at `min` rather than at zero. A value arriving from outside the
- * range is drawn at the nearer bound but reported back unchanged, leaving the survey's own validation to
- * reject it.
+ * `min + n * step`, so the grid is anchored at `min` rather than at zero, and the control only ever reports
+ * a value that sits on that grid. A value arriving from outside the range is drawn at the nearer bound but
+ * reported back unchanged, leaving the survey's own validation to reject it.
  *
  * Value. The control is fully controlled and emits nothing on mount: `undefined` means unanswered, and an
  * unanswered control parks the handle at `min` with the handle left unfilled, so a slider nobody touched
  * stays distinguishable from one answered with `min`. `onChange` receives a plain number.
  *
  * Accessibility. The primitive supplies `role="slider"`, the live value semantics and the full key contract -
- * arrow keys step by one increment, Page keys jump, Home and End move to the bounds - and the handle is
- * named from the headline and carries the required state, the role being on the handle rather than on the
- * root. The value readout is an `output` bound to the control.
+ * arrow keys step by one increment, Page keys jump, Home and End move to the bounds - and the handle carries
+ * the role, the value, the required state and the focus, the primitive's own root having no role at all. The
+ * handle's accessible name is the headline flattened to plain text, so a headline authored as rich text is
+ * announced as the question rather than as its markup. An error message is announced through
+ * `aria-describedby` alongside `aria-invalid`. While the control is unanswered the handle carries an
+ * `aria-valuetext` saying so, because the parked position would otherwise be announced as an answer. The
+ * value readout is an `output` bound to the control.
  *
- * Appearance. Every part is token-driven - colour, radius and font come from the existing design tokens
- * rather than from hard-coded values - and each carries a stable slot attribute a consumer can target:
- * `slider`, `slider-track`, `slider-range` and `slider-thumb`. `dir` accepts `"ltr"`, `"rtl"` or `"auto"`,
- * and the track, the fill and the endpoint labels invert together.
+ * Appearance. Every part is token-driven - no colour, radius or font is hard-coded and no new `--fb-*`
+ * variable is introduced - and each carries a stable slot attribute a consumer can target: `slider`,
+ * `slider-track`, `slider-range` and `slider-thumb`. `dir` accepts `"ltr"`, `"rtl"` or `"auto"`, and the
+ * track, the fill and the endpoint labels invert together. The handle answers hover, focus and press with
+ * three distinct rings - a pale 2px halo, a 3px brand ring offset by a ring of the input surface, and a 5px
+ * halo while held - none of which changes its geometry, so nothing under the respondent's pointer moves.
  */
 function Slider({
   elementId,
@@ -143,12 +221,24 @@ function Slider({
   showValue = true,
   required = false,
   requiredLabel,
+  unansweredLabel = DEFAULT_UNANSWERED_LABEL,
   errorMessage,
   dir = "auto",
   disabled = false,
   imageUrl,
   videoUrl,
 }: Readonly<SliderProps>): React.JSX.Element {
+  const hasError = Boolean(errorMessage);
+  const errorId = `${inputId}-error`;
+  // Only the error message is a description. Required-ness is a STATE, published as `aria-required` on the
+  // handle - the one element in the composition that carries a role, and a role for which ARIA defines the
+  // attribute. Describing it instead would restate the marker `ElementHeader` already renders, which assistive
+  // technology reads from the document anyway, so it was announced twice.
+  const describedBy = hasError ? errorId : undefined;
+
+  // The name the handle is announced by. Memoised because an interaction re-renders this component on
+  // every movement while the headline it is derived from does not change, and flattening parses a document.
+  const accessibleName = React.useMemo(() => toPlainText(headline), [headline]);
   // A value that is not a finite number is not an answer, and is never coerced into one.
   const hasValue = typeof value === "number" && Number.isFinite(value);
   const safeStep = Number.isFinite(step) && step > 0 ? step : FALLBACK_STEP;
@@ -215,6 +305,12 @@ function Slider({
    */
   const reportedDuringInteraction = React.useRef(false);
 
+  // Whether the interaction now ending actually began on this control. `pointerup` fires on release over the
+  // handle however the press started, so without this record a press begun elsewhere and merely finished here
+  // would answer the question with the position the handle happens to be parked on. A ref rather than state,
+  // because nothing about it is rendered and it has to be readable within the interaction that wrote it.
+  const pressBeganOnControl = React.useRef(false);
+
   const handleValueChange = (next: number[]): void => {
     if (disabled) return;
 
@@ -230,6 +326,7 @@ function Slider({
 
   const beginInteraction = (): void => {
     reportedDuringInteraction.current = false;
+    pressBeganOnControl.current = true;
   };
 
   /**
@@ -243,7 +340,11 @@ function Slider({
    * overwritten by the position the handle happened to start from.
    */
   const endInteraction = (): void => {
-    if (disabled || hasValue || reportedDuringInteraction.current) return;
+    // Consumed whatever the outcome, so one press can complete at most one selection.
+    const beganHere = pressBeganOnControl.current;
+    pressBeganOnControl.current = false;
+
+    if (!beganHere || disabled || hasValue || reportedDuringInteraction.current) return;
 
     const parkedValue = toElementValue(offsetValue);
     if (Number.isFinite(parkedValue)) {
@@ -263,6 +364,36 @@ function Slider({
     }
   };
 
+  /*
+   * Styling notes for the composition below. Kept here rather than beside the class lists because a comment
+   * inside a call's argument list survives this package's unminified build and ships in the library chunk,
+   * whereas a statement-level block like this one does not.
+   *
+   * Handle fill. `bg-brand` versus `bg-input-bg` is what tells an untouched control apart from one answered
+   * with the minimum - the two are otherwise identical, handle position included.
+   *
+   * Ring colour, declared unconditionally. Whichever variant supplies a ring WIDTH must not be able to paint
+   * an unbranded ring. Tailwind wraps `hover:` utilities in `@media (hover: hover)`, and a consuming
+   * application's own stylesheet may well provide an ungated `hover:ring-2` of its own - which is exactly
+   * what happens when this control is embedded in an application built on an older Tailwind. The width then
+   * applies while the gated colour does not, and the ring falls back to Tailwind's stock blue. Declaring the
+   * colour on the base rule removes that possibility and costs nothing by itself: a ring colour with no ring
+   * width paints nothing.
+   *
+   * Focus indicator, as two concentric rings. A single translucent brand halo measured 1.9-2.4:1 against the
+   * page, the track AND the handle's own border - the border being the same brand colour, so the halo had
+   * almost nothing to contrast with. A full-opacity brand ring separated from the handle by a ring of the
+   * input surface gives the indicator a high-contrast boundary on both of its sides, whatever it sits over:
+   * the brand against the page or the track, and the surface against the brand-filled handle and the range.
+   *
+   * Pressed state. The ring widens and the cursor becomes `grabbing`. Without it the handle looked identical
+   * held and merely focused, and a `cursor-grab` affordance that never becomes `grabbing` contradicts itself.
+   * The root repeats the cursor because a drag captures the pointer: once it leaves the handle the cursor
+   * resolves against whatever is under it, which is the track or the root, and would otherwise flicker back.
+   *
+   * Every interaction affordance is a ring or a cursor. None is a size, a translation or a scale, so nothing
+   * under the respondent's pointer moves when they hover, focus or press.
+   */
   return (
     <div className="w-full space-y-4" id={elementId} dir={dir}>
       <ElementHeader
@@ -278,26 +409,53 @@ function Slider({
       {/* Slider body. `relative` anchors the absolutely positioned indicator bar that ElementError renders,
           so it must stay on this wrapper with the error as its first child. */}
       <div className="relative">
-        <ElementError errorMessage={errorMessage} dir={dir} />
+        {/* Wrapped so the message has a stable id the handle can point at. The wrapper stays unpositioned, so
+            the indicator bar keeps resolving against the `relative` ancestor above and the child's bottom
+            margin still collapses through it - the spacing is unchanged. */}
+        {hasError ? (
+          <div id={errorId}>
+            <ElementError errorMessage={errorMessage} dir={dir} />
+          </div>
+        ) : null}
 
         {/* Selected-value readout. `output` is the semantic element for a computed value and is announced as
             such by assistive technology, and `htmlFor` ties it to the control that produced it. The figure is
             the value itself, never the clamped position the handle is drawn at, so a value arriving from
-            outside the range stays visible to the respondent who has to correct it. */}
-        {showValue && hasValue ? (
+            outside the range stays visible to the respondent who has to correct it.
+
+            Mounted for the whole life of the control whenever it is enabled, and merely hidden until there is
+            something to show, so that its box is reserved from the first paint. Creating it on the first
+            answer instead would insert 30px of new content ABOVE the track at the exact moment the respondent
+            is touching it, displacing the handle - and the submit button - out from under their pointer. The
+            placeholder is a no-break space rather than an empty string, because an empty inline box collapses
+            to zero height and would reserve nothing. `visibility: hidden` keeps the placeholder out of the
+            accessibility tree as well as out of sight, so nothing announces a value that does not exist. And
+            because the region exists before the value first changes, that first change is announced. */}
+        {showValue ? (
           <output
-            className="text-input-text font-input font-input-weight mb-2 block text-center"
+            // `cn` is deliberately not used for this one class list. Its tailwind-merge step treats
+            // `font-input` (the family token) and `font-input-weight` (the weight token) as a single
+            // conflicting `font-*` group and keeps only the later of the two, which would silently drop the
+            // readout's font family. Composing the string directly keeps both tokens, and there is nothing
+            // here for a merge to resolve: every class is this component's own and `invisible` conflicts with
+            // none of them.
+            className={READOUT_CLASS + (hasValue ? "" : " invisible")}
             htmlFor={inputId}>
-            {value}
+            {hasValue ? value : "\u00a0"}
           </output>
         ) : null}
 
-        {/* Driven in offset space - see the note above. `id` lives here so the readout's `htmlFor` resolves
-            to a real element; `output`'s `for` may reference elements a label could not. */}
+        {/* `id` lives here so the header's and the readout's `htmlFor` both resolve to a real element.
+            The primitive gives this element no role, and an ARIA attribute that is not global - `aria-required`
+            in particular - is invalid on an element without one, so nothing is announced from here: the value,
+            the name and every state live on the handle below, required-ness among them. The primitive sets its
+            own `aria-disabled` on this node, which is cleared explicitly so that this value replaces it rather
+            than being merged behind it - leaving the roleless node carrying no `aria-*` at all. `data-disabled`,
+            which the primitive also sets, is untouched: it carries no ARIA meaning and is what the disabled
+            styling hangs off. */}
         <SliderPrimitive.Root
           data-slot="slider"
           id={inputId}
-          aria-label={headline}
           min={0}
           max={span}
           step={safeStep}
@@ -309,44 +467,80 @@ function Slider({
           onKeyUp={handleKeyUp}
           disabled={disabled}
           dir={sliderDir}
+          aria-disabled={undefined}
           className={cn(
             "relative flex w-full touch-none select-none items-center",
-            disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"
+            disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer active:cursor-grabbing"
           )}>
           <SliderPrimitive.Track
             data-slot="slider-track"
             className="bg-input-bg border-input-border rounded-input relative h-2 w-full grow overflow-hidden border">
-            <SliderPrimitive.Range data-slot="slider-range" className="bg-brand absolute h-full" />
+            {/* Forced colours replace every author colour with one from the user's own palette, which
+                flattens the fill and the track it sits in to the same surface. Naming a system colour
+                inside the query is what survives that substitution, so how much of the track is filled
+                stays visible to a respondent who browses that way. */}
+            <SliderPrimitive.Range
+              data-slot="slider-range"
+              className="bg-brand absolute h-full forced-colors:bg-[CanvasText]"
+            />
           </SliderPrimitive.Track>
 
-          {/* The handle carries `role="slider"`, the live value and the focus. Its `aria-value*` set is
+          {/* The handle carries `role="slider"`, the live value and the focus, so the accessible name, the
+              states and the descriptions all belong here rather than on the root. Its `aria-value*` set is
               supplied here rather than left to the primitive, which would publish the offset it is driven
-              with instead of the number the respondent is choosing. `aria-required` belongs here for the
-              same reason the role does: the primitive's root is a roleless element, where assistive
-              technology has no widget to attach the state to.
+              with instead of the number the respondent is choosing.
+
+              `aria-required` is valid here precisely because this node has a role that defines it, and it is
+              the only place required-ness can be published as a state rather than as prose. It is omitted
+              rather than set to "false" for an optional control, so the attribute's presence alone carries
+              the meaning.
+
+              `aria-valuetext` overrides the numeric announcement while the control is unanswered. Without it
+              the parked handle reports the lower bound, so a screen-reader user could not tell an untouched
+              control from one deliberately answered with that bound - the very distinction the unfilled
+              handle makes visually. Once answered it is dropped, restoring the numeric value.
 
               While the control is unanswered the handle publishes the minimum as its current value, because
               the slider role requires one - the unfilled handle is the visual signal that nothing has been
-              chosen yet. Announcing that state instead would take a translated string, which this
-              presentational component takes no part in resolving.
+              chosen yet.
 
               `asChild` renders the element below in its place, which is what lets the node be replaced once
               when the primitive fails to resolve its handle - see the note above. The primitive merges its
               own props, styles and ref onto it. */}
           <SliderPrimitive.Thumb
             data-slot="slider-thumb"
-            aria-label={headline}
-            aria-required={required}
+            aria-label={accessibleName || undefined}
+            aria-required={required || undefined}
+            aria-valuetext={hasValue ? undefined : unansweredLabel}
+            aria-invalid={hasError || undefined}
+            aria-disabled={disabled || undefined}
+            aria-describedby={describedBy}
             aria-valuemin={min}
             aria-valuemax={max}
             aria-valuenow={displayedValue}
             className={cn(
               "border-brand block h-5 w-5 rounded-full border-2 outline-none",
-              "transition-colors",
-              // Fill is what tells an untouched control apart from one answered with the minimum.
-              hasValue ? "bg-brand" : "bg-input-bg",
-              "focus-visible:ring-ring/50 focus-visible:ring-[3px]",
-              disabled ? "cursor-not-allowed" : "cursor-grab"
+              "transition-[background-color,box-shadow]",
+              // Fill is what tells an untouched control apart from one answered with the minimum. Under
+              // forced colours a fill alone cannot: both of these resolve to the same surface colour, and a
+              // slider answered with its own minimum has neither a visible fill on the track nor a handle
+              // anywhere but the start, so the two states would be indistinguishable. The answered handle
+              // therefore names a system colour, which survives the substitution, and the untouched one is
+              // additionally outlined differently - a difference in shape rather than in colour, which is
+              // the one cue no colour scheme can take away.
+              hasValue ? "bg-brand forced-colors:bg-[CanvasText]" : "bg-input-bg forced-colors:border-dashed",
+              // The ring colour is declared unconditionally so it can never fall back to Tailwind's default
+              // blue: gating the colour while leaving the 2px width ungated is what painted an unbranded ring
+              // on devices that report a hover they do not have.
+              "ring-brand-20",
+              // Full opacity, with an offset ring of the input surface behind it. At half opacity over the
+              // brand-filled handle the focus ring measured below the 3:1 contrast WCAG asks of a focus
+              // indicator; the offset is what separates it from the handle it surrounds.
+              "focus-visible:ring-ring focus-visible:ring-[3px] focus-visible:ring-offset-2",
+              "focus-visible:ring-offset-input-bg",
+              disabled
+                ? "cursor-not-allowed"
+                : "cursor-grab hover:ring-2 active:cursor-grabbing active:ring-[5px]"
             )}
             asChild>
             <span key={thumbGeneration} ref={thumbRef} />

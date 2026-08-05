@@ -559,21 +559,22 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
     test.each([
       { label: "an infinite minimum", range: { min: Number.NEGATIVE_INFINITY, max: 100 }, step: 5 },
       { label: "an infinite maximum", range: { min: 0, max: Number.POSITIVE_INFINITY }, step: 5 },
-    ])(
-      "accepts $label at the schema, because `z.number()` admits it, and still fails closed at the evaluator",
-      ({ range, step }) => {
-        // An infinite bound satisfies `z.number()` and breaks none of the three relational refinements, so
-        // these parse. The evaluator's defensive read declines them, because a rule derived from an infinite
-        // bound places the grid nowhere - so the answer is refused with the accurate structural reason.
-        expect(parseSliderConfig({ range, step }).success).toBe(true);
+      // Two ordinary numbers whose distance is not one: `-1e308` to `1e308` overflows to Infinity, so every
+      // fraction of the range - a position along the track, the mean of the answers - is meaningless.
+      { label: "a span that overflows", range: { min: -1e308, max: 1e308 }, step: 5 },
+    ])("rejects $label at the schema and fails closed at the evaluator", ({ range, step }) => {
+      // `z.number()` admits the infinities on its own, and none of the three relational rules catches them -
+      // `step > max - min` reads `step > Infinity`, which is false for every step. Both entry points read the
+      // numeric domain from the same function, so neither is left to admit a configuration the other refuses:
+      // an author cannot save a slider that would reject every answer submitted to it.
+      expect(parseSliderConfig({ range, step }).success).toBe(false);
 
-        const result = validateElementResponse(buildSliderWithConfig({ range, step }), 50, "en");
+      const result = validateElementResponse(buildSliderWithConfig({ range, step }), 50, "en");
 
-        expect(result.valid).toBe(false);
-        expect(result.errors.map((error) => error.ruleId)).toEqual(["sliderConfiguration"]);
-        expect(result.errors.map((error) => error.ruleType)).toEqual(["elementConfiguration"]);
-      }
-    );
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((error) => error.ruleId)).toEqual(["sliderConfiguration"]);
+      expect(result.errors.map((error) => error.ruleType)).toEqual(["elementConfiguration"]);
+    });
 
     // `above` is stated per case rather than derived as `max + step`, because a step finer than its own
     // maximum can express adds nothing to it: `1 + 1e-20` is exactly `1` in doubles, so the derived probe

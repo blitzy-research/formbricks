@@ -138,6 +138,87 @@ describe("Slider", () => {
     expect(screen.queryByText("0")).not.toBeInTheDocument();
   });
 
+  test("holds the readout's place from the first paint, so the first answer shifts nothing", () => {
+    // Rendered and merely hidden rather than added when the first value arrives: a readout that appeared
+    // would push the track out from under the handle the respondent is holding. It is also what gets that
+    // first value change announced, because the region already exists when the value changes.
+    const { container, rerender } = render(<Slider {...defaultProps} />);
+    const readout = container.querySelector("output");
+
+    expect(readout).not.toBeNull();
+    expect(readout).toHaveClass("invisible");
+    expect(readout?.textContent).toBe(" ");
+
+    rerender(<Slider {...defaultProps} value={45} />);
+
+    // The SAME element, now revealed - not a replacement, which is what keeps the box from moving.
+    expect(container.querySelector("output")).toBe(readout);
+    expect(readout).not.toHaveClass("invisible");
+    expect(readout).toHaveTextContent("45");
+  });
+
+  test("reserves that place exactly once, with no second box standing in beside it", () => {
+    // A hidden box holding the readout's place and a readout that is itself always mounted are two ways to
+    // reserve the same line, and rendering both reserves two: the extra one is torn down on the first answer
+    // and gives its line back, which is the very shift the reservation exists to prevent. Asserted by class
+    // rather than by tag, because a stand-in can be any element at all.
+    const { container } = render(<Slider {...defaultProps} />);
+    const reserved = Array.from(container.querySelectorAll("*")).filter((node) => {
+      const classes = node.classList;
+      return classes.contains("mb-2") && classes.contains("block") && classes.contains("text-center");
+    });
+
+    expect(reserved).toHaveLength(1);
+    expect(reserved[0].tagName).toBe("OUTPUT");
+    // Nothing hidden from assistive technology is holding a line either, which is how such a stand-in reads.
+    expect(container.querySelectorAll('[aria-hidden="true"].invisible')).toHaveLength(0);
+  });
+
+  test("adds and removes nothing at all when the first answer arrives", () => {
+    // The reservation only holds if the answered tree has the same nodes as the unanswered one. A node that
+    // exists in exactly one of the two states moves everything below it the moment the value changes -
+    // measured at 30px for one readout line, landing on the track while the respondent is on it.
+    const { container, rerender } = render(<Slider {...defaultProps} />);
+    const before = Array.from(container.querySelectorAll("*"));
+
+    rerender(<Slider {...defaultProps} value={45} />);
+
+    const after = Array.from(container.querySelectorAll("*"));
+    expect(after).toHaveLength(before.length);
+    // Same nodes, not merely the same number of them: identity is what keeps the boxes where they were.
+    expect(before.every((node) => node.isConnected)).toBe(true);
+    expect(after.every((node) => before.includes(node))).toBe(true);
+  });
+
+  test("reserves nothing at all when the readout is suppressed", () => {
+    const { container } = render(<Slider {...defaultProps} showValue={false} />);
+
+    expect(container.querySelector("output")).toBeNull();
+  });
+
+  test("keeps both readout font tokens, which tailwind-merge would collapse", () => {
+    // `font-input-weight` reads as another font family to tailwind-merge, so composing these through `cn`
+    // silently drops `font-input`. Asserted as whole class names because one token is a substring of the other.
+    const { container } = render(<Slider {...defaultProps} value={45} />);
+    const classes = Array.from(container.querySelector("output")?.classList ?? []);
+
+    expect(classes).toContain("font-input");
+    expect(classes).toContain("font-input-weight");
+    expect(classes).toContain("text-input-text");
+  });
+
+  test("distinguishes answered from unanswered without relying on colour", () => {
+    // Under forced colours `bg-brand` and `bg-input-bg` resolve to the same surface, and a slider answered
+    // with its own minimum has no visible fill and its handle at the start - so the two states would be
+    // identical. A system colour survives the substitution, and a dashed outline is a non-colour cue.
+    const { container: unanswered } = render(<Slider {...defaultProps} />);
+    expect(getSlot(unanswered, "slider-thumb")).toHaveClass("forced-colors:border-dashed");
+
+    const { container: answered } = render(<Slider {...defaultProps} value={45} />);
+    expect(getSlot(answered, "slider-thumb")).toHaveClass("forced-colors:bg-[CanvasText]");
+    expect(getSlot(answered, "slider-range")).toHaveClass("forced-colors:bg-[CanvasText]");
+  });
+
   test("hides the readout when showValue is false", () => {
     render(<Slider {...defaultProps} value={45} showValue={false} />);
 
@@ -183,7 +264,154 @@ describe("Slider", () => {
   test("leaves the required state off an optional control", () => {
     render(<Slider {...defaultProps} />);
 
-    expect(getThumb()).toHaveAttribute("aria-required", "false");
+    // Absent rather than `false`: an optional control has no required state to report, and publishing one
+    // only to deny it is noise assistive technology reads out for nothing.
+    expect(getThumb()).not.toHaveAttribute("aria-required");
+  });
+
+  test("announces nothing from the roleless element the primitive puts the interaction on", () => {
+    // ARIA admits no state or property on an element without a role, so anything declared there is invalid
+    // markup that no assistive technology reads. The primitive also sets `aria-disabled` on that node itself,
+    // which is why it is passed explicitly as `undefined` rather than merely left unset.
+    const { container } = render(<Slider {...defaultProps} required errorMessage="Pick a value" />);
+    const root = getSlot(container, "slider");
+
+    expect(root).not.toHaveAttribute("role");
+    expect(root).not.toHaveAttribute("aria-required");
+    expect(root).not.toHaveAttribute("aria-label");
+    expect(root).not.toHaveAttribute("aria-disabled");
+  });
+
+  test("keeps the disabled state on the widget with the role, and the styling hook on the root", () => {
+    const { container } = render(<Slider {...defaultProps} disabled />);
+
+    expect(getThumb()).toHaveAttribute("aria-disabled", "true");
+    expect(getSlot(container, "slider")).not.toHaveAttribute("aria-disabled");
+    // `data-disabled` carries no ARIA meaning and is what the disabled styling hangs off, so it stays.
+    expect(getSlot(container, "slider")).toHaveAttribute("data-disabled");
+  });
+
+  test("leaves the disabled state off an enabled control", () => {
+    const { container } = render(<Slider {...defaultProps} />);
+
+    expect(getThumb()).not.toHaveAttribute("aria-disabled");
+    expect(getSlot(container, "slider")).not.toHaveAttribute("aria-disabled");
+  });
+
+  test("points the handle at the error message and marks it invalid", () => {
+    const { container } = render(<Slider {...defaultProps} errorMessage="Pick a value" />);
+
+    const errorId = `${defaultProps.inputId}-error`;
+    expect(getThumb()).toHaveAttribute("aria-describedby", errorId);
+    expect(getThumb()).toHaveAttribute("aria-invalid", "true");
+    // The reference has to resolve, or it announces nothing at all.
+    expect(container.querySelector(`#${errorId}`)).toHaveTextContent("Pick a value");
+  });
+
+  test("describes nothing while there is no error", () => {
+    render(<Slider {...defaultProps} required />);
+
+    expect(getThumb()).not.toHaveAttribute("aria-describedby");
+    expect(getThumb()).not.toHaveAttribute("aria-invalid");
+  });
+
+  test("ignores a release from a press that began somewhere else", () => {
+    // `pointerup` fires on release over the handle however the press started, so a press begun off the control
+    // and merely finished over it must not answer the question with the parked position.
+    const { container } = render(<Slider {...defaultProps} />);
+
+    fireEvent.pointerUp(getSlot(container, "slider"));
+
+    expect(defaultProps.onChange).not.toHaveBeenCalled();
+  });
+
+  test("still records the parked minimum for a press that did begin on the control", () => {
+    const { container } = render(<Slider {...defaultProps} />);
+    const root = getSlot(container, "slider");
+
+    fireEvent.pointerDown(root);
+    fireEvent.pointerUp(root);
+
+    expect(defaultProps.onChange).toHaveBeenCalledWith(0);
+  });
+
+  test("lets one press complete at most one selection", () => {
+    const { container } = render(<Slider {...defaultProps} />);
+    const root = getSlot(container, "slider");
+
+    fireEvent.pointerDown(root);
+    fireEvent.pointerUp(root);
+    fireEvent.pointerUp(root);
+
+    expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
+  });
+
+  test("says the control is unanswered rather than announcing its parked lower bound", () => {
+    // The handle has to be drawn somewhere, so an unanswered control parks it at `min` and the role obliges
+    // the primitive to publish `min` as the value. Without this a screen-reader user could not tell an
+    // untouched control from one deliberately answered with that bound.
+    render(<Slider {...defaultProps} min={10} max={50} unansweredLabel="Nothing chosen" />);
+
+    expect(getThumb()).toHaveAttribute("aria-valuenow", "10");
+    expect(getThumb()).toHaveAttribute("aria-valuetext", "Nothing chosen");
+  });
+
+  test("drops the unanswered announcement once there is a value", () => {
+    render(<Slider {...defaultProps} value={45} unansweredLabel="Nothing chosen" />);
+
+    expect(getThumb()).not.toHaveAttribute("aria-valuetext");
+    expect(getThumb()).toHaveAttribute("aria-valuenow", "45");
+  });
+
+  test("shows the required indicator exactly once", () => {
+    // One copy only - the header's visible marker, which assistive technology reads from the document like any
+    // other text. A screen-reader-only second copy announced the word twice and said nothing `aria-required`
+    // does not say better.
+    render(<Slider {...defaultProps} required />);
+
+    expect(screen.getAllByText("Required")).toHaveLength(1);
+  });
+
+  test("answers hover, focus and press with rings that never change the handle's geometry", () => {
+    // A ring is drawn outside the box, so none of these can move what is under the respondent's pointer. The
+    // colour is unconditional so it can never fall back to Tailwind's default blue, and the focus ring is at
+    // full opacity because at half opacity over the brand-filled handle it fell below 3:1 contrast.
+    const { container } = render(<Slider {...defaultProps} />);
+    const thumb = getSlot(container, "slider-thumb");
+
+    expect(thumb).toHaveClass("ring-brand-20");
+    expect(thumb).toHaveClass("hover:ring-2");
+    expect(thumb).toHaveClass("focus-visible:ring-ring", "focus-visible:ring-[3px]");
+    expect(thumb).toHaveClass("focus-visible:ring-offset-2", "focus-visible:ring-offset-input-bg");
+    expect(thumb).not.toHaveClass("focus-visible:ring-ring/50");
+    expect(thumb).toHaveClass("active:ring-[5px]", "active:cursor-grabbing");
+  });
+
+  test("announces the headline as plain text, never as the markup it is stored as", () => {
+    // The headline is authored with a rich-text editor and stored as markup. An accessible name is a plain
+    // string read out verbatim, so the markup has to come off first - and a headline carrying a script must
+    // not have its source read aloud.
+    const richHeadline = '<p><b>How <i>likely</i></b> are you?</p><script>alert("xss")</script>';
+
+    render(<Slider {...defaultProps} headline={richHeadline} />);
+
+    const name = getThumb().getAttribute("aria-label") ?? "";
+    expect(name).toBe("How likely are you?");
+    for (const forbidden of ["<", ">", "script", "alert", "<p", "<b"]) {
+      expect(name).not.toContain(forbidden);
+    }
+  });
+
+  test("joins a multi-line headline with a space rather than running the words together", () => {
+    render(<Slider {...defaultProps} headline="<p>First line</p><p>second line</p>" />);
+
+    expect(getThumb()).toHaveAttribute("aria-label", "First line second line");
+  });
+
+  test("publishes no name at all for a headline carrying no readable text", () => {
+    render(<Slider {...defaultProps} headline="<p></p>" />);
+
+    expect(getThumb()).not.toHaveAttribute("aria-label");
   });
 
   // -------------------------------------------------------------------------

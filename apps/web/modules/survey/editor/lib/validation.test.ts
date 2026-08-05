@@ -15,6 +15,7 @@ import {
   TSurveyOpenTextElement,
   TSurveyPictureSelectionElement,
   TSurveyRatingElement,
+  TSurveySliderElement,
 } from "@formbricks/types/surveys/elements";
 import {
   TSurvey,
@@ -715,6 +716,70 @@ describe("validation.validateElement", () => {
         },
       };
       expect(validation.validateElement(q, surveyLanguagesEnabled)).toBe(true);
+    });
+  });
+
+  // Test Slider Element
+  //
+  // A slider's numeric configuration is what makes it answerable at all, and the survey schema refuses to save
+  // an element whose range or step describes nothing selectable. Without a rule here the editor would report
+  // the id the save flagged and then immediately clear it again, so the card would never be marked and the
+  // author would never be shown which field is wrong.
+  describe("Slider Element", () => {
+    const sliderElementBase: TSurveySliderElement = {
+      ...baseElementFields,
+      type: TSurveyElementTypeEnum.Slider,
+      headline: { default: "Confidence", en: "Confidence", de: "Zuversicht" },
+      range: { min: 0, max: 100 },
+      step: 5,
+      showValue: true,
+    } as unknown as TSurveySliderElement;
+
+    test("should return true for a valid Slider element", () => {
+      expect(validation.validateElement(sliderElementBase, surveyLanguagesEnabled)).toBe(true);
+    });
+
+    test("should return false if the minimum is above the maximum", () => {
+      const q = { ...sliderElementBase, range: { min: 200, max: 100 } };
+      expect(validation.validateElement(q, surveyLanguagesEnabled)).toBe(false);
+    });
+
+    test("should return false if the bounds are equal", () => {
+      const q = { ...sliderElementBase, range: { min: 50, max: 50 } };
+      expect(validation.validateElement(q, surveyLanguagesEnabled)).toBe(false);
+    });
+
+    test("should return false if the step is zero", () => {
+      const q = { ...sliderElementBase, step: 0 };
+      expect(validation.validateElement(q, surveyLanguagesEnabled)).toBe(false);
+    });
+
+    test("should return false if the step is negative", () => {
+      const q = { ...sliderElementBase, step: -5 };
+      expect(validation.validateElement(q, surveyLanguagesEnabled)).toBe(false);
+    });
+
+    test("should return false if the step is wider than the range", () => {
+      const q = { ...sliderElementBase, step: 250 };
+      expect(validation.validateElement(q, surveyLanguagesEnabled)).toBe(false);
+    });
+
+    test("should return true if the step is exactly as wide as the range", () => {
+      const q = { ...sliderElementBase, range: { min: 0, max: 10 }, step: 10 };
+      expect(validation.validateElement(q, surveyLanguagesEnabled)).toBe(true);
+    });
+
+    test("should return false if a bound is missing", () => {
+      const q = { ...sliderElementBase, range: { max: 100 } } as unknown as TSurveySliderElement;
+      expect(validation.validateElement(q, surveyLanguagesEnabled)).toBe(false);
+    });
+
+    test("should still apply the default label validation to a valid configuration", () => {
+      const q = {
+        ...sliderElementBase,
+        lowerLabel: { default: "Low", en: "Low", de: "" }, // Invalid
+      };
+      expect(validation.validateElement(q, surveyLanguagesEnabled)).toBe(false);
     });
   });
 

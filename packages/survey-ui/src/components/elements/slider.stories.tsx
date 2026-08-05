@@ -77,6 +77,12 @@ const meta: Meta<StoryProps> = {
       description: "Whether the currently selected value is displayed above the track",
       table: { category: "Content" },
     },
+    unansweredLabel: {
+      control: "text",
+      description:
+        "Announced by assistive technology in place of the value while the control is unanswered, so that an untouched control is distinguishable from one answered with `min` - the distinction the unfilled thumb makes visually",
+      table: { category: "Content" },
+    },
   },
   // The component is controlled, so a stateful wrapper owns the value for every
   // story. Without it the thumb would snap back on release instead of moving.
@@ -133,6 +139,15 @@ export const StylingPlayground: Story = {
   decorators: [createCSSVariablesDecorator<StoryProps>()],
 };
 
+/**
+ * Resting state of a freshly rendered element.
+ *
+ * `value` is deliberately omitted so the control renders as unanswered: the
+ * thumb parks at `min` but is filled with the input background rather than the
+ * brand colour, the readout's box is reserved but empty until the respondent
+ * interacts - so answering shifts nothing below it - and the thumb announces
+ * itself as unanswered rather than as its lower bound.
+ */
 export const Default: Story = {
   args: {
     elementId: "slider-default",
