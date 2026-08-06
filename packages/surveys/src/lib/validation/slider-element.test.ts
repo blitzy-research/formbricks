@@ -230,14 +230,13 @@ describe("slider grid rejection holds at magnitudes where floating point stops b
   /**
    * A 0.2 grid whose values scale past `Number.MAX_SAFE_INTEGER`.
    *
-   * The configuration itself is legitimate - `min < max`, a positive step no wider than the range - so an
-   * author can publish it and the evaluator injects the range and grid rules for it exactly as it does for
-   * the reference element. What this suite pins is the grid rule's arithmetic at a magnitude where double
-   * arithmetic is no longer exact: the spacing between representable doubles at 1e15 is 0.125, so
-   * reconstructing the nearest grid point in doubles lands back on the submitted value and would measure a
-   * drift of zero for a value half a step off the grid.
+   * This is the configuration the schema now refuses: at 1e15 the spacing between representable doubles is
+   * 0.125, and a range control restates each position it settles on at the step's decimal scale - a
+   * `Math.round(v * 10) / 10` here - which stops being exact once `v * 10` leaves the exact-integer range.
+   * The respondent's arrow key then skips a grid point and shortly stops moving the handle at all, so the
+   * grid is unwalkable however sound `min < max` and `0 < step <= span` look on their own.
    */
-  const buildHighMagnitudeElement = (): TSurveySliderElement =>
+  const buildUnwalkableGridElement = (): TSurveySliderElement =>
     ({
       id: HIGH_MAGNITUDE_ELEMENT_ID,
       type: TSurveyElementTypeEnum.Slider,
@@ -247,8 +246,49 @@ describe("slider grid rejection holds at magnitudes where floating point stops b
       step: 0.2,
     }) as unknown as TSurveySliderElement;
 
-  test("the high-magnitude configuration is a lawful one, so its answers are judged by the rules", () => {
-    expect(ZSurveySliderElement.safeParse(buildHighMagnitudeElement()).success).toBe(true);
+  /**
+   * The same 0.2 grid three orders of magnitude lower, which IS walkable.
+   *
+   * 1e12 tenths is 1e13 - comfortably inside the exact-integer range - while the spacing between
+   * representable doubles at 1e12 is still 0.0001220703125, so this remains a genuine floating-point hazard
+   * for the grid rule to be exact about. It is what keeps the assertions below attributable to the rule's
+   * arithmetic rather than to the magnitude of the numbers.
+   */
+  const buildWalkableHighMagnitudeElement = (): TSurveySliderElement =>
+    ({
+      id: HIGH_MAGNITUDE_ELEMENT_ID,
+      type: TSurveyElementTypeEnum.Slider,
+      headline: { default: "Pick a value" },
+      required: true,
+      range: { min: 0, max: 1000000000001 },
+      step: 0.2,
+    }) as unknown as TSurveySliderElement;
+
+  test("the schema refuses a grid its own control could not walk", () => {
+    const parsed = ZSurveySliderElement.safeParse(buildUnwalkableGridElement());
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) {
+      throw new Error("Expected the unwalkable grid to be rejected, but it parsed successfully.");
+    }
+
+    expect(parsed.error.issues.map((issue) => [issue.path, issue.message])).toEqual([
+      [["step"], "Step is too fine for this range to be selectable"],
+    ]);
+  });
+
+  test("fails closed on an unwalkable grid that is already persisted", () => {
+    // A survey saved before the grid was refused, or written straight to the database, still reaches the
+    // evaluator. Refusing the answer keeps the server authoritative rather than validating it against a
+    // grid the schema would no longer allow.
+    const result = validateElementResponse(buildUnwalkableGridElement(), 1000000000000000.4, "en");
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.map((error) => error.ruleType)).toEqual(["elementConfiguration"]);
+  });
+
+  test("the walkable grid at high magnitude is lawful, so its answers are judged by the rules", () => {
+    expect(ZSurveySliderElement.safeParse(buildWalkableHighMagnitudeElement()).success).toBe(true);
   });
 
   // Each value below is a whole half-step off the grid - the largest miss the grid admits, not a rounding
@@ -272,13 +312,11 @@ describe("slider grid rejection holds at magnitudes where floating point stops b
   });
 
   test("should carry that exactness through validateBlockResponses, which is what every route reaches", () => {
-    const element = buildHighMagnitudeElement();
+    const element = buildWalkableHighMagnitudeElement();
 
-    const offGrid = validateBlockResponses(
-      [element],
-      { [HIGH_MAGNITUDE_ELEMENT_ID]: 1000000000000000.5 },
-      "en"
-    );
+    // A half-step off the grid at a magnitude where the double spacing is far finer than the step, so only
+    // exact arithmetic can tell the two apart.
+    const offGrid = validateBlockResponses([element], { [HIGH_MAGNITUDE_ELEMENT_ID]: 999999999999.5 }, "en");
 
     expect(Object.keys(offGrid)).toEqual([HIGH_MAGNITUDE_ELEMENT_ID]);
     expect(offGrid[HIGH_MAGNITUDE_ELEMENT_ID].map((error) => error.ruleType)).toEqual(["stepMultipleOf"]);
@@ -286,9 +324,7 @@ describe("slider grid rejection holds at magnitudes where floating point stops b
     // The aligned value at the same magnitude is accepted, so the rejection above is attributable to the
     // grid rather than to the size of the number.
     expect(
-      Object.keys(
-        validateBlockResponses([element], { [HIGH_MAGNITUDE_ELEMENT_ID]: 1000000000000000.4 }, "en")
-      )
+      Object.keys(validateBlockResponses([element], { [HIGH_MAGNITUDE_ELEMENT_ID]: 999999999999.6 }, "en"))
     ).toEqual([]);
   });
 });
@@ -425,13 +461,51 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
       path: ["step"],
       message: "Step must be greater than zero",
     },
-    // --- The one derived guard: a grid carrying a single selectable answer -----------------------
+    // --- The derived guards ----------------------------------------------------------------------
+    // A grid carrying a single selectable answer.
     {
       label: "a step wider than the range",
       range: { min: 0, max: 10 },
       step: 20,
       path: ["step"],
       message: "Step cannot be larger than the range",
+    },
+    // A grid whose points cannot be walked in double precision at the magnitude the bounds reach. A range
+    // control restates each position at the step's decimal scale - `Math.round(v * 10 ** scale) / 10 ** scale`
+    // - which is exact only while the scaled value stays inside the exact-integer range of a double. Past it
+    // the arrow key skips a grid point or stops moving the handle, so the configuration is refused rather than
+    // published as usable.
+    {
+      label: "a fractional grid at a magnitude that scales past the exact-integer range",
+      range: { min: 0, max: 1e15 },
+      step: 0.2,
+      path: ["step"],
+      message: "Step is too fine for this range to be selectable",
+    },
+    {
+      label: "a whole-number grid above the exact-integer range",
+      range: { min: 0, max: 1e16 },
+      step: 1,
+      path: ["step"],
+      message: "Step is too fine for this range to be selectable",
+    },
+    {
+      // Whatever reads the step's scale reads its PRINTED form, and JavaScript prints anything below a
+      // millionth in exponential notation - so `1e-7` shows no decimals at all and its grid collapses onto
+      // whole numbers, leaving only the bounds selectable.
+      label: "a step whose printed form hides its decimals",
+      range: { min: 0, max: 100 },
+      step: 1e-7,
+      path: ["step"],
+      message: "Step is too fine for this range to be selectable",
+    },
+    {
+      // `1 + 1e-20` is exactly `1` in doubles, so this grid has no second point to move to.
+      label: "a step finer than its own range can express",
+      range: { min: 0, max: 1 },
+      step: 1e-20,
+      path: ["step"],
+      message: "Step is too fine for this range to be selectable",
     },
   ];
 
@@ -591,14 +665,14 @@ describe("slider schema rejects a configuration no answer could satisfy", () => 
         above: 2e15,
       },
       { label: "a grid offset from zero", range: { min: 10, max: 50 }, step: 5, value: 15, above: 55 },
-      // A grid far finer than the scale of its own range. It is valid under the schema, so its answers are
-      // judged by the injected rules like those of every other valid configuration.
+      // A fine grid at a magnitude that still scales inside the exact-integer range: 1e6 hundredths is
+      // 1e8, so the control can walk it and the schema admits it. Fineness alone disqualifies nothing.
       {
-        label: "a grid finer than the range's own scale",
-        range: { min: 0, max: 1 },
-        step: 1e-20,
-        value: 0,
-        above: 2,
+        label: "a hundredth-grid across a million",
+        range: { min: 0, max: 1e6 },
+        step: 0.01,
+        value: 999999.99,
+        above: 1000000.01,
       },
     ])(
       "accepts $label at the schema and checks answers against it at the evaluator",

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { TI18nString } from "@formbricks/types/i18n";
 import { getLocalizedValue, getTranslations } from "./i18n";
 import i18n from "./i18n.config";
@@ -135,6 +135,84 @@ describe("i18n", () => {
           "Please select a date between a and b"
         );
       }
+    });
+
+    // The runtime passes the *selected language code*, and that code is the string "default" for every
+    // survey being read in its own default language - which is every single-language survey. `default`
+    // is not a language: `I18nProvider` resolves it against the survey's language list and sets the
+    // shared instance to the real code, so the instance is the only authority this function can ask.
+    // These cases pin both halves of that: the sentinel must answer in the presented language, and no
+    // call may write to the instance, because every translated component is subscribed to it.
+    describe("the default-language sentinel", () => {
+      const REQUIRED_KEY = "errors.please_fill_out_this_field";
+
+      afterEach(async () => {
+        // The instance is a module singleton shared by every test in this file.
+        await i18n.changeLanguage("en");
+      });
+
+      test.each([
+        ["de", "Bitte füllen Sie dieses Feld aus"],
+        ["ja", "このフィールドに入力してください"],
+        ["ar", "يرجى ملء هذا الحقل"],
+      ])("answers in the language the survey is presented in (%s)", async (presented, expected) => {
+        await i18n.changeLanguage(presented);
+
+        expect(getTranslations("default")(REQUIRED_KEY)).toBe(expected);
+      });
+
+      test("interpolates through the sentinel in the presented language", async () => {
+        await i18n.changeLanguage("de");
+
+        expect(getTranslations("default")(INTERPOLATED_KEY, { step: 5 })).toBe(
+          "Bitte geben Sie einen Wert in Schritten von 5 ein"
+        );
+      });
+
+      test("resolves a region-variant instance to the language that carries the bundle", async () => {
+        await i18n.changeLanguage("de-DE");
+
+        expect(getTranslations("default")(REQUIRED_KEY)).toBe("Bitte füllen Sie dieses Feld aus");
+      });
+
+      test("leaves the presented language untouched", async () => {
+        await i18n.changeLanguage("de");
+        const before = i18n.language;
+
+        getTranslations("default");
+        getTranslations("ja");
+        getTranslations("<script>");
+        getTranslations("en");
+
+        // Every translated component re-renders when this changes, so a validation call that moved it
+        // would reset a localized survey's whole chrome to another language until the next reload.
+        expect(i18n.language).toBe(before);
+        expect(i18n.language).toBe("de");
+        // ...and the survey still answers in its own language afterwards.
+        expect(getTranslations("default")(REQUIRED_KEY)).toBe("Bitte füllen Sie dieses Feld aus");
+      });
+
+      test("does not answer in the presented language when a real code is requested", async () => {
+        await i18n.changeLanguage("de");
+
+        // An explicitly requested language always wins: only the sentinel defers to the instance.
+        expect(getTranslations("ja")(REQUIRED_KEY)).toBe("このフィールドに入力してください");
+        expect(getTranslations("en")(REQUIRED_KEY)).toBe("Please fill out this field");
+      });
+
+      test("falls back when the instance itself somehow holds the sentinel", async () => {
+        // Resolving the sentinel to itself would be circular, so the fallback language is used.
+        await i18n.changeLanguage("default");
+
+        expect(getTranslations("default")(REQUIRED_KEY)).toBe("Please fill out this field");
+      });
+
+      test("falls back to English with no provider, as on the server", () => {
+        // `init` establishes the fallback language and no provider ever moves it in a server process,
+        // so a response submitted with language "default" is validated in English exactly as before.
+        expect(i18n.language).toBe("en");
+        expect(getTranslations("default")(REQUIRED_KEY)).toBe("Please fill out this field");
+      });
     });
   });
 });

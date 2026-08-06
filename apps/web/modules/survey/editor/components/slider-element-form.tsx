@@ -168,6 +168,7 @@ const getSliderConfigurationIssues = (element: TSurveySliderElement): TSliderCon
         break;
       case "stepNotPositive":
       case "stepWiderThanRange":
+      case "stepTooFineForRange":
         recordFirstIssue(issues, "step", issue.code);
         break;
     }
@@ -311,6 +312,7 @@ export const SliderElementForm = ({
     rangeTooWide: t("environments.surveys.edit.slider_range_too_wide"),
     stepNotPositive: t("environments.surveys.edit.slider_step_must_be_greater_than_zero"),
     stepWiderThanRange: t("environments.surveys.edit.slider_step_cannot_exceed_range"),
+    stepTooFineForRange: t("environments.surveys.edit.slider_step_too_fine_for_range"),
   };
 
   const rangeErrorId = getSliderFieldErrorId(rangeId);

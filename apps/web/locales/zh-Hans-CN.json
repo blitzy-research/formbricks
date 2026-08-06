@@ -1647,6 +1647,7 @@
         "slider_range_too_wide": "最小值与最大值之间的范围过大",
         "slider_step_cannot_exceed_range": "步长不能大于范围",
         "slider_step_must_be_greater_than_zero": "步长必须大于 0",
+        "slider_step_too_fine_for_range": "步长对该范围来说过小，无法选择数值",
         "smiley": "笑脸",
         "spam_protection_note": "垃圾 邮件 保护 对于 与 iOS 、 React Native 和 Android SDK 一起 显示 的 调查 无效 。 它 将 破坏 调查。",
         "spam_protection_threshold_description": "设置 值 在 0 和 1 之间，响应 低于 此 值 将 被 拒绝。",

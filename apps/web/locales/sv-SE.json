@@ -1647,6 +1647,7 @@
         "slider_range_too_wide": "Intervallet mellan minimum och maximum är för stort",
         "slider_step_cannot_exceed_range": "Steget får inte vara större än intervallet",
         "slider_step_must_be_greater_than_zero": "Steget måste vara större än 0",
+        "slider_step_too_fine_for_range": "Steget är för litet för att det här intervallet ska kunna väljas",
         "smiley": "Smiley",
         "spam_protection_note": "Spamskydd fungerar inte för enkäter som visas med iOS, React Native och Android SDK:er. Det kommer att bryta enkäten.",
         "spam_protection_threshold_description": "Ställ in värde mellan 0 och 1, svar under detta värde kommer att avvisas.",

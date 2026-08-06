@@ -1647,6 +1647,7 @@
         "slider_range_too_wide": "最小值與最大值之間的範圍過大",
         "slider_step_cannot_exceed_range": "步長不能大於範圍",
         "slider_step_must_be_greater_than_zero": "步長必須大於 0",
+        "slider_step_too_fine_for_range": "步長對該範圍來說過小，無法選擇數值",
         "smiley": "表情符號",
         "spam_protection_note": "垃圾郵件保護不適用於使用 iOS、React Native 和 Android SDK 顯示的問卷。它會破壞問卷。",
         "spam_protection_threshold_description": "設置值在 0 和 1 之間，低於此值的回應將被拒絕。",

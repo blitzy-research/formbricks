@@ -1647,6 +1647,7 @@
         "slider_range_too_wide": "Het bereik tussen het minimum en het maximum is te groot",
         "slider_step_cannot_exceed_range": "De stapgrootte mag niet groter zijn dan het bereik",
         "slider_step_must_be_greater_than_zero": "De stapgrootte moet groter zijn dan 0",
+        "slider_step_too_fine_for_range": "De stapgrootte is te klein om dit bereik selecteerbaar te maken",
         "smiley": "Smiley",
         "spam_protection_note": "Spambeveiliging werkt niet voor enquêtes die worden weergegeven met de iOS-, React Native- en Android SDK's. Het zal de enquête breken.",
         "spam_protection_threshold_description": "Stel een waarde in tussen 0 en 1, reacties onder deze waarde worden afgewezen.",

@@ -1647,6 +1647,7 @@
         "slider_range_too_wide": "La plage entre le minimum et le maximum est trop grande",
         "slider_step_cannot_exceed_range": "Le pas ne peut pas être supérieur à la plage",
         "slider_step_must_be_greater_than_zero": "Le pas doit être supérieur à 0",
+        "slider_step_too_fine_for_range": "Le pas est trop petit pour que cette plage soit sélectionnable",
         "smiley": "Sourire",
         "spam_protection_note": "La protection contre le spam ne fonctionne pas pour les enquêtes affichées avec les SDK iOS, React Native et Android. Cela cassera l'enquête.",
         "spam_protection_threshold_description": "Définir une valeur entre 0 et 1, les réponses en dessous de cette valeur seront rejetées.",

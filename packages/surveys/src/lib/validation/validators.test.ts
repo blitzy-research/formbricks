@@ -635,13 +635,16 @@ describe("validators", () => {
         expect(validators.stepMultipleOf.check(step * 1.5, { step }, {} as TSurveyElement).valid).toBe(false);
       });
 
-      test("should admit and still judge a configuration finer than any fixed scale ceiling", () => {
-        // The element schema constrains min < max, step > 0 and step <= span, and nothing else - so a step
-        // this fine is a lawful configuration and the rule has to answer for it.
+      test("should still judge a configuration finer than any fixed scale ceiling", () => {
+        // The schema refuses this grid, because no range control can walk one whose step is not even visible
+        // in its own printed form. The rule is judged separately from that: rules reach it from surveys
+        // persisted before a guard existed and from author-configured rule lists, so failing open here would
+        // leave such an answer unconstrained - and "unconstrained" is the one outcome a grid rule must never
+        // produce.
         const step = 1e-310;
         const parsed = ZSurveySliderElement.safeParse(buildConfiguration(0, step * 10, step));
 
-        expect(parsed.success).toBe(true);
+        expect(parsed.success).toBe(false);
         expect(
           validators.stepMultipleOf.check(step * 3, { step, offset: 0 }, {} as TSurveyElement).valid
         ).toBe(true);

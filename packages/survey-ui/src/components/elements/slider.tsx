@@ -55,8 +55,18 @@ const VALUE_ADJUSTING_KEYS = new Set([
  * as setting the same property, and it cannot tell this design system's two font tokens apart - it treats
  * `font-input-weight` as another font family and drops `font-input`. Hiding the readout appends to this
  * instead of merging with it, which nothing here conflicts with.
+ *
+ * The colour is written as the two-step token chain rather than as the `text-input-text` utility, because
+ * that utility compiles to `color: var(--fb-input-text-color)` with no fallback and the theme declares no
+ * such variable - it declares `--fb-input-color`. An unresolvable `var()` makes the declaration invalid at
+ * computed-value time, so `color` inherits and the readout paints the document's default black while the
+ * headline, the description and the endpoint labels beside it all paint the theme's own `#414b5a`. Naming
+ * both variables keeps the intent - the input text colour - and resolves it: the chain is exactly the one
+ * the stylesheet itself uses for `--fb-input-placeholder-color`, so a theme that does declare
+ * `--fb-input-text-color` still wins and nothing new is introduced for one that does not.
  */
-const READOUT_CLASS = "text-input-text font-input font-input-weight mb-2 block text-center";
+const READOUT_CLASS =
+  "text-[var(--fb-input-text-color,var(--fb-input-color))] font-input font-input-weight mb-2 block text-center";
 
 /**
  * Elements whose boundary is read as a pause rather than as nothing at all.
@@ -194,10 +204,15 @@ interface SliderProps {
  * arrow keys step by one increment, Page keys jump, Home and End move to the bounds - and the handle carries
  * the role, the value, the required state and the focus, the primitive's own root having no role at all. The
  * handle's accessible name is the headline flattened to plain text, so a headline authored as rich text is
- * announced as the question rather than as its markup. An error message is announced through
- * `aria-describedby` alongside `aria-invalid`. While the control is unanswered the handle carries an
- * `aria-valuetext` saying so, because the parked position would otherwise be announced as an answer. The
- * value readout is an `output` bound to the control.
+ * announced as the question rather than as its markup. Activating the headline or the description focuses the
+ * handle, which is what a label would do; the header deliberately renders no `label` element, because the
+ * only element it could reference is the primitive's roleless root and a label may reference only a labelable
+ * control. An error message is announced twice over: immediately, because the container it appears in is an
+ * assertive live region, and again on demand through the handle's `aria-describedby` alongside
+ * `aria-invalid`. While the control is unanswered the handle carries an `aria-valuetext` saying so, because
+ * the parked position would otherwise be announced as an answer. The value readout is an `output` bound to
+ * the control. The handle and the rail each accept the pointer across 44px, added as transparent
+ * pseudo-elements so the target is larger than the paint.
  *
  * Appearance. Every part is token-driven - no colour, radius or font is hard-coded and no new `--fb-*`
  * variable is introduced - and each carries a stable slot attribute a consumer can target: `slider`,
@@ -205,6 +220,8 @@ interface SliderProps {
  * track, the fill and the endpoint labels invert together. The handle answers hover, focus and press with
  * three distinct rings - a pale 2px halo, a 3px brand ring offset by a ring of the input surface, and a 5px
  * halo while held - none of which changes its geometry, so nothing under the respondent's pointer moves.
+ * Under forced colours, where a ring cannot paint at all, focus is shown as an outline the mode fills with a
+ * system colour instead.
  */
 function Slider({
   elementId,
@@ -296,6 +313,24 @@ function Slider({
       setThumbGeneration(1);
     }
   }, [thumbGeneration]);
+
+  /**
+   * Moves focus to the handle when the respondent activates the question's own text.
+   *
+   * This is the behaviour a `<label for>` would have supplied, and it is supplied here instead because it
+   * cannot be supplied there: the only element the header could point at is the primitive's root, and HTML
+   * lets a label reference only a labelable control - a button, an input, a select and so on. The root is a
+   * `span`, so the reference resolved to nothing, `label.control` was null, and activating the headline moved
+   * focus nowhere at all. The header therefore renders its text as plain spans (see the composition below)
+   * and this handler restores the one thing the broken association was there to provide.
+   *
+   * The handle is the element that carries the role, the value and the focus, so it is the only sensible
+   * destination. A disabled control is left alone, exactly as a native one would be.
+   */
+  const focusThumb = (): void => {
+    if (disabled) return;
+    thumbRef.current?.focus();
+  };
 
   /**
    * Whether the primitive reported a value during the interaction in progress.
@@ -391,19 +426,39 @@ function Slider({
    * The root repeats the cursor because a drag captures the pointer: once it leaves the handle the cursor
    * resolves against whatever is under it, which is the track or the root, and would otherwise flicker back.
    *
-   * Every interaction affordance is a ring or a cursor. None is a size, a translation or a scale, so nothing
-   * under the respondent's pointer moves when they hover, focus or press.
+   * Forced-colours focus. That mode discards every author colour and suppresses box shadows outright, so the
+   * three rings above cannot paint at all - and `outline-none` used to leave nothing in their place, making a
+   * focused handle pixel-for-pixel identical to an unfocused one. `focus-visible:outline-hidden` keeps
+   * suppressing the browser's own indicator in normal colours, exactly as `outline-none` did, while declaring
+   * a real 2px outline under forced colours for the mode to repaint in a system colour. One indicator in
+   * either rendering, never two at once.
+   *
+   * Pointer targets. The rail is 8px tall and the handle 20px across, both well under the 44px a fingertip
+   * needs, and the handle is absolutely positioned so it contributes no height to the element the primitive
+   * listens on. Each therefore carries a transparent `::before` that extends its pointer target to 44px: a
+   * pseudo-element is hit tested as part of the element that owns it, sits out of flow, and paints nothing, so
+   * every measurement of this control - and every pixel of it - is what it was. The same reason rules out
+   * padding, a min-size or a larger handle, all of which would move the layout.
+   *
+   * Every interaction affordance is a ring, an outline or a cursor. None is a size, a translation or a scale,
+   * so nothing under the respondent's pointer moves when they hover, focus or press.
    */
   return (
     <div className="w-full space-y-4" id={elementId} dir={dir}>
+      {/* No `htmlFor`. The header would point it at the primitive's root, which is a `span` and therefore not
+          a labelable element, so the browser resolved the reference to nothing: `label.control` was null,
+          Chrome reported "Incorrect use of <label for=FORM_ELEMENT>" for both the headline and the
+          description, and clicking either left focus on the document body. Without it the header renders the
+          same text as spans - no invalid reference, and nothing announced twice - while `onClick` supplies the
+          one behaviour the association was for, and the handle keeps carrying the accessible name itself. */}
       <ElementHeader
         headline={headline}
         description={description}
         required={required}
         requiredLabel={requiredLabel}
-        htmlFor={inputId}
         imageUrl={imageUrl}
         videoUrl={videoUrl}
+        onClick={focusThumb}
       />
 
       {/* Slider body. `relative` anchors the absolutely positioned indicator bar that ElementError renders,
@@ -411,9 +466,17 @@ function Slider({
       <div className="relative">
         {/* Wrapped so the message has a stable id the handle can point at. The wrapper stays unpositioned, so
             the indicator bar keeps resolving against the `relative` ancestor above and the child's bottom
-            margin still collapses through it - the spacing is unchanged. */}
+            margin still collapses through it - the spacing is unchanged.
+
+            The wrapper is also the live region. It is mounted only while there is something to say, so its
+            insertion is the announcement - which is what a respondent who cannot see the message needs, since
+            submitting leaves focus on the submit button and nothing else would speak. `assertive` rather than
+            `polite` because the submission the respondent just made did not happen, and `aria-atomic` so the
+            whole message is read rather than only the words that changed between two different errors. The
+            handle's `aria-describedby` points at this same node, so the message is also available on demand
+            once focus reaches the control. */}
         {hasError ? (
-          <div id={errorId}>
+          <div id={errorId} role="alert" aria-live="assertive" aria-atomic="true">
             <ElementError errorMessage={errorMessage} dir={dir} />
           </div>
         ) : null}
@@ -456,6 +519,7 @@ function Slider({
         <SliderPrimitive.Root
           data-slot="slider"
           id={inputId}
+          name={inputId}
           min={0}
           max={span}
           step={safeStep}
@@ -470,6 +534,8 @@ function Slider({
           aria-disabled={undefined}
           className={cn(
             "relative flex w-full touch-none select-none items-center",
+            // 8px of rail, 44px of pointer target - see the pointer-target note above.
+            "before:absolute before:-inset-y-[18px] before:inset-x-0 before:content-['']",
             disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer active:cursor-grabbing"
           )}>
           <SliderPrimitive.Track
@@ -519,7 +585,9 @@ function Slider({
             aria-valuemax={max}
             aria-valuenow={displayedValue}
             className={cn(
-              "border-brand block h-5 w-5 rounded-full border-2 outline-none",
+              "border-brand block h-5 w-5 rounded-full border-2",
+              // 20px of handle, 44px of pointer target - see the pointer-target note above.
+              "before:absolute before:-inset-3 before:content-['']",
               "transition-[background-color,box-shadow]",
               // Fill is what tells an untouched control apart from one answered with the minimum. Under
               // forced colours a fill alone cannot: both of these resolve to the same surface colour, and a
@@ -538,6 +606,9 @@ function Slider({
               // indicator; the offset is what separates it from the handle it surrounds.
               "focus-visible:ring-ring focus-visible:ring-[3px] focus-visible:ring-offset-2",
               "focus-visible:ring-offset-input-bg",
+              // Suppresses the browser's indicator in normal colours and supplies one under forced colours,
+              // where a ring cannot paint - see the forced-colours note above.
+              "focus-visible:outline-hidden",
               disabled
                 ? "cursor-not-allowed"
                 : "cursor-grab hover:ring-2 active:cursor-grabbing active:ring-[5px]"

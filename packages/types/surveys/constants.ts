@@ -45,7 +45,8 @@ export type TSurveySliderConfigurationIssueCode =
   | "minimumNotBelowMaximum"
   | "rangeTooWide"
   | "stepNotPositive"
-  | "stepWiderThanRange";
+  | "stepWiderThanRange"
+  | "stepTooFineForRange";
 
 /** One reason a slider configuration was rejected, addressed at the field that carries the mistake. */
 export interface TSurveySliderConfigurationIssue {
@@ -59,6 +60,59 @@ export interface TSurveySliderConfigurationIssue {
 export type TSurveySliderConfigurationResult =
   | { valid: true; configuration: TSurveySliderConfiguration }
   | { valid: false; issues: TSurveySliderConfigurationIssue[] };
+
+/**
+ * Decimal places a number needs, including the magnitudes JavaScript prints in exponential notation.
+ *
+ * `String(1e-7)` is `"1e-7"`, which carries no decimal point even though the value needs seven places, so
+ * reading the fraction alone would understate every such number.
+ */
+const decimalPlaces = (input: number): number => {
+  if (!Number.isFinite(input)) return 0;
+
+  const [mantissa, exponent] = String(Math.abs(input)).split("e");
+  const fraction = mantissa.split(".")[1] ?? "";
+  if (!exponent) return fraction.length;
+
+  return Math.max(fraction.length - Number(exponent), 0);
+};
+
+/**
+ * The decimal places a number's PRINTED form carries, which is a different question.
+ *
+ * A range control reads a step's scale off its printed form - `String(step).split(".")[1]` - so a step
+ * JavaScript prints in exponential notation is read as carrying no decimals at all, and its grid collapses
+ * onto whole numbers. `1e-7` needs seven places and shows none; `1.5e-7` needs eight and shows four.
+ */
+const printedDecimalPlaces = (input: number): number => (String(input).split(".")[1] ?? "").length;
+
+/**
+ * Whether a grid of `step`, reaching `magnitude`, can actually be walked in double precision.
+ *
+ * A range control does not add a step to a value and stop there. It divides the distance from the origin by
+ * the step, rounds that to the nearest whole number of steps, multiplies back, and then restates the result
+ * at the step's own decimal scale - a `Math.round(value * 10 ** scale) / 10 ** scale`. That restatement is
+ * exact only while `value * 10 ** scale` stays inside the range of integers a double represents exactly. Past
+ * it, the rounding lands on the wrong multiple, and the symptom is what a respondent sees: pressing the arrow
+ * key skips a grid point, or stops moving the handle altogether. A range of `0` to `1e15` in steps of `0.2`
+ * is the smallest realistic configuration that breaks this way - `1e15 * 10` is `1e16`, and doubles stop
+ * being exact above `9007199254740991`.
+ *
+ * The two conditions below are therefore the same requirement stated at both ends of the scale: the grid,
+ * measured in units of the step's finest decimal place, has to be a whole number a double holds exactly, and
+ * the step's scale has to be the one a control reading its printed form will actually see.
+ *
+ * This is deliberately conservative at the top of the double range: a configuration whose grid happens to
+ * survive because its step is a power of two is rejected along with the ones that do not. Refusing a range
+ * above roughly a quadrillion with a fractional step costs nothing real, and the alternative - accepting a
+ * grid the control cannot walk - is the defect this exists to prevent.
+ */
+const isGridRepresentable = (magnitude: number, step: number): boolean => {
+  if (printedDecimalPlaces(step) !== decimalPlaces(step)) return false;
+
+  const scaled = magnitude * 10 ** decimalPlaces(step);
+  return Number.isFinite(scaled) && scaled <= Number.MAX_SAFE_INTEGER;
+};
 
 /**
  * THE canonical definition of a usable slider configuration.
@@ -78,7 +132,10 @@ export type TSurveySliderConfigurationResult =
  * - `max - min` is itself finite - `-1e308` to `1e308` has finite bounds but a span no double can hold, which
  *   would make every derived measurement (a percentage along the track, a mean of the answers) meaningless;
  * - `step` is a finite number greater than zero - a non-positive or infinite step describes no grid;
- * - `step` is no wider than the span - a wider step leaves only the minimum selectable.
+ * - `step` is no wider than the span - a wider step leaves only the minimum selectable;
+ * - the grid can be walked in double precision at the magnitude the bounds reach - see
+ *   `isGridRepresentable`. A grid too fine for its own range is one no control can step through, so the
+ *   respondent's arrow key would skip points or stop moving the handle.
  */
 export const parseSurveySliderConfiguration = (element: unknown): TSurveySliderConfigurationResult => {
   const issues: TSurveySliderConfigurationIssue[] = [];
@@ -139,6 +196,20 @@ export const parseSurveySliderConfiguration = (element: unknown): TSurveySliderC
       code: "stepWiderThanRange",
       path: ["step"],
       message: "Step cannot be larger than the range",
+    });
+  } else if (
+    min !== null &&
+    max !== null &&
+    !isGridRepresentable(Math.max(Math.abs(min), Math.abs(max), usableSpan ?? 0), step)
+  ) {
+    // Reported once, at the step, because the step is the field an author can act on: the same grid becomes
+    // usable the moment it is made coarser, and the bounds are usually the part they actually meant. The
+    // magnitude the grid has to survive is the largest number it reaches - either bound, or the span the
+    // control is driven across - because that is where the arithmetic runs out of precision first.
+    issues.push({
+      code: "stepTooFineForRange",
+      path: ["step"],
+      message: "Step is too fine for this range to be selectable",
     });
   }
 

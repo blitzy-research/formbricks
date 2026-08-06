@@ -1647,6 +1647,7 @@
         "slider_range_too_wide": "O intervalo entre o mínimo e o máximo é demasiado amplo",
         "slider_step_cannot_exceed_range": "O passo não pode ser maior que o intervalo",
         "slider_step_must_be_greater_than_zero": "O passo deve ser maior que 0",
+        "slider_step_too_fine_for_range": "O passo é demasiado pequeno para que este intervalo seja selecionável",
         "smiley": "Sorridente",
         "spam_protection_note": "A proteção contra spam não funciona para inquéritos exibidos com os SDKs iOS, React Native e Android. Isso irá quebrar o inquérito.",
         "spam_protection_threshold_description": "Defina um valor entre 0 e 1, respostas abaixo deste valor serão rejeitadas.",

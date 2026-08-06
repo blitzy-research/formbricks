@@ -1662,6 +1662,7 @@
         "slider_range_too_wide": "The range between the minimum and the maximum is too wide",
         "slider_step_cannot_exceed_range": "Step cannot be larger than the range",
         "slider_step_must_be_greater_than_zero": "Step must be greater than 0",
+        "slider_step_too_fine_for_range": "Step is too fine for this range to be selectable",
         "smiley": "Smiley",
         "spam_protection_note": "Spam protection does not work for surveys displayed with the iOS, React Native, and Android SDKs. It will break the survey.",
         "spam_protection_threshold_description": "Set value between 0 and 1, responses below this value will be rejected.",

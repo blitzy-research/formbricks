@@ -1647,6 +1647,7 @@
         "slider_range_too_wide": "A minimum és a maximum közötti tartomány túl nagy",
         "slider_step_cannot_exceed_range": "A léptetés nem lehet nagyobb a tartománynál",
         "slider_step_must_be_greater_than_zero": "A léptetésnek nagyobbnak kell lennie 0-nál",
+        "slider_step_too_fine_for_range": "A léptetés túl kicsi ahhoz, hogy ez a tartomány kiválasztható legyen",
         "smiley": "Hangulatjel",
         "spam_protection_note": "A szemét elleni védekezés nem működik az iOS, React Native és Android SDK-kkal megjelenített kérdőíveknél. El fogja rontani a kérdőívet.",
         "spam_protection_threshold_description": "Állítsa az értéket 0 és 1 közé, az ezen érték alatt lévő válaszok elutasításra kerülnek.",

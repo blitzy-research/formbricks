@@ -1647,6 +1647,7 @@
         "slider_range_too_wide": "Intervalul dintre valoarea minimă și cea maximă este prea mare",
         "slider_step_cannot_exceed_range": "Pasul nu poate fi mai mare decât intervalul",
         "slider_step_must_be_greater_than_zero": "Pasul trebuie să fie mai mare decât 0",
+        "slider_step_too_fine_for_range": "Pasul este prea mic pentru ca acest interval să poată fi selectat",
         "smiley": "Smiley",
         "spam_protection_note": "Protecția împotriva spamului nu funcționează pentru sondajele afișate folosind SDK-urile iOS, React Native și Android. Va întrerupe sondajul.",
         "spam_protection_threshold_description": "Setați valoarea între 0 și 1, răspunsurile sub această valoare vor fi respinse.",

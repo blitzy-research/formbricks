@@ -1647,6 +1647,7 @@
         "slider_range_too_wide": "最小値と最大値の範囲が広すぎます",
         "slider_step_cannot_exceed_range": "刻み幅は範囲より大きくできません",
         "slider_step_must_be_greater_than_zero": "刻み幅は0より大きくしてください",
+        "slider_step_too_fine_for_range": "刻み幅がこの範囲に対して細かすぎるため、値を選択できません",
         "smiley": "スマイリー",
         "spam_protection_note": "スパム対策は、iOS、React Native、およびAndroid SDKで表示されるフォームでは機能しません。フォームが壊れます。",
         "spam_protection_threshold_description": "値を0から1の間で設定してください。この値より低い回答は拒否されます。",

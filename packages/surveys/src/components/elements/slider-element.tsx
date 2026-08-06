@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { useTranslation } from "react-i18next";
 import { Slider } from "@formbricks/survey-ui";
 import { type TResponseData, type TResponseTtc } from "@formbricks/types/responses";
+import { parseSurveySliderConfiguration } from "@formbricks/types/surveys/constants";
 import type { TSurveySliderElement } from "@formbricks/types/surveys/elements";
 import { getLocalizedValue } from "@/lib/i18n";
 import { getUpdatedTtc, useTtc } from "@/lib/ttc";
@@ -46,33 +47,17 @@ const FALLBACK_CONFIG: TSliderRenderConfig = { min: 0, max: 100, step: 1 };
  * which reaches the respondent through `errorMessage` the moment an answer is submitted, so the renderer's
  * only job is to stay standing until it does.
  *
- * The trust test mirrors the evaluator's exactly - finite numbers, `min < max`, a positive step no wider than
- * the range - so the two layers agree on which configurations are usable.
+ * The trust test is `parseSurveySliderConfiguration`'s, not this function's - the same function the element
+ * schema refines against, the editor panel marks its fields from, and the response evaluator reads through.
+ * Delegating rather than restating is what keeps the control and the evaluator agreeing BY CONSTRUCTION about
+ * which configurations are usable. Restating them is how they drift: a configuration the evaluator refuses to
+ * judge but the control renders anyway produces a slider a respondent can move and can never submit, and one
+ * whose grid the control cannot walk in double precision is exactly that case - the handle skips a stop or
+ * stops answering the arrow key, which is the symptom the grid rule exists to prevent.
  */
 const readRenderConfig = (element: TSurveySliderElement): TSliderRenderConfig => {
-  const { range, step } = element as { range?: unknown; step?: unknown };
-  const bounds = (typeof range === "object" && range !== null ? range : {}) as {
-    min?: unknown;
-    max?: unknown;
-  };
-
-  if (
-    typeof bounds.min !== "number" ||
-    typeof bounds.max !== "number" ||
-    typeof step !== "number" ||
-    !Number.isFinite(bounds.min) ||
-    !Number.isFinite(bounds.max) ||
-    !Number.isFinite(step)
-  ) {
-    return FALLBACK_CONFIG;
-  }
-
-  const { min, max } = bounds as { min: number; max: number };
-  if (min >= max || step <= 0 || step > max - min) {
-    return FALLBACK_CONFIG;
-  }
-
-  return { min, max, step };
+  const result = parseSurveySliderConfiguration(element);
+  return result.valid ? result.configuration : FALLBACK_CONFIG;
 };
 
 /**

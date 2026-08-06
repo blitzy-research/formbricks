@@ -769,6 +769,22 @@ describe("validation.validateElement", () => {
       expect(validation.validateElement(q, surveyLanguagesEnabled)).toBe(true);
     });
 
+    test("should return false if the grid is too fine to be walked at the bounds' magnitude", () => {
+      // Sound on its own terms - `min < max`, a positive step no wider than the range - but a range control
+      // restates each position at the step's decimal scale, which stops being exact once the scaled value
+      // leaves the exact-integer range of a double. The author is told here rather than by respondents whose
+      // arrow key skips grid points and then stops moving the handle.
+      const q = { ...sliderElementBase, range: { min: 0, max: 1e15 }, step: 0.2 };
+      expect(validation.validateElement(q, surveyLanguagesEnabled)).toBe(false);
+    });
+
+    test("should return true for the same grid at a magnitude it can be walked at", () => {
+      // The guard is about the grid, not about large numbers: three orders of magnitude lower the identical
+      // step is fine.
+      const q = { ...sliderElementBase, range: { min: 0, max: 1e12 }, step: 0.2 };
+      expect(validation.validateElement(q, surveyLanguagesEnabled)).toBe(true);
+    });
+
     test("should return false if a bound is missing", () => {
       const q = { ...sliderElementBase, range: { max: 100 } } as unknown as TSurveySliderElement;
       expect(validation.validateElement(q, surveyLanguagesEnabled)).toBe(false);

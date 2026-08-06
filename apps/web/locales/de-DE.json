@@ -1647,6 +1647,7 @@
         "slider_range_too_wide": "Der Wertebereich zwischen Minimum und Maximum ist zu groß",
         "slider_step_cannot_exceed_range": "Die Schrittweite darf nicht größer als der Wertebereich sein",
         "slider_step_must_be_greater_than_zero": "Die Schrittweite muss größer als 0 sein",
+        "slider_step_too_fine_for_range": "Die Schrittweite ist für diesen Wertebereich zu klein, um auswählbar zu sein",
         "smiley": "Smiley",
         "spam_protection_note": "Spamschutz funktioniert nicht für Umfragen, die mit den iOS-, React Native- und Android-SDKs angezeigt werden. Es wird die Umfrage unterbrechen.",
         "spam_protection_threshold_description": "Wert zwischen 0 und 1 festlegen, Antworten unter diesem Wert werden abgelehnt.",

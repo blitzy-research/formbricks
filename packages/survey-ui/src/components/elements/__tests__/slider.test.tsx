@@ -204,7 +204,19 @@ describe("Slider", () => {
 
     expect(classes).toContain("font-input");
     expect(classes).toContain("font-input-weight");
-    expect(classes).toContain("text-input-text");
+  });
+
+  test("names a declared variable for the readout colour", () => {
+    // `text-input-text` compiles to `color: var(--fb-input-text-color)` with no fallback, and the theme
+    // declares no such variable - it declares `--fb-input-color`. The unresolvable reference made the
+    // declaration invalid at computed-value time, so the readout inherited the document's black while every
+    // other piece of text in the element painted the theme's own colour. Naming both keeps the intent and
+    // resolves it, exactly as the stylesheet's own `--fb-input-placeholder-color` does.
+    const { container } = render(<Slider {...defaultProps} value={45} />);
+    const classes = Array.from(container.querySelector("output")?.classList ?? []);
+
+    expect(classes).toContain("text-[var(--fb-input-text-color,var(--fb-input-color))]");
+    expect(classes).not.toContain("text-input-text");
   });
 
   test("distinguishes answered from unanswered without relying on colour", () => {
@@ -645,5 +657,120 @@ describe("Slider", () => {
     render(<Slider {...defaultProps} required requiredLabel="Obligatorisch" />);
 
     expect(screen.getByText("Obligatorisch")).toBeInTheDocument();
+  });
+
+  // -------------------------------------------------------------------------
+  // Labelling: the question's own text, and the control the browser binds it to
+  // -------------------------------------------------------------------------
+
+  test("renders no label element, because the only target it could name is not labelable", () => {
+    // HTML lets a `for` reference only a labelable control, and the primitive's root is a `span`. Pointing at
+    // it resolved to nothing - `label.control` was null and the browser reported the reference as incorrect -
+    // so the header renders its text as plain spans instead, with the accessible name on the handle.
+    const { container } = render(
+      <Slider {...defaultProps} description="Drag the handle to pick a value" required />
+    );
+
+    expect(container.querySelectorAll("label")).toHaveLength(0);
+    expect(container.querySelectorAll("[for]")).toHaveLength(1);
+    // The one remaining `for` is the readout's, where the attribute lists the elements a value was computed
+    // from rather than naming a control - valid on any element, and not a label association at all.
+    expect(container.querySelector("output")).toHaveAttribute("for", "test-slider-input");
+    expect(getThumb()).toHaveAttribute("aria-label", "How satisfied are you?");
+  });
+
+  test("focuses the handle when the question's own text is activated", () => {
+    // The behaviour a working label would have supplied. The handle is the destination because it is the
+    // element that carries the role, the value and the focus.
+    render(<Slider {...defaultProps} description="Drag the handle to pick a value" />);
+
+    fireEvent.click(screen.getByText("How satisfied are you?"));
+    expect(getThumb()).toHaveFocus();
+  });
+
+  test("focuses the handle when the description is activated", () => {
+    render(<Slider {...defaultProps} description="Drag the handle to pick a value" />);
+
+    fireEvent.click(screen.getByText("Drag the handle to pick a value"));
+    expect(getThumb()).toHaveFocus();
+  });
+
+  test("does not move focus into a disabled control", () => {
+    render(<Slider {...defaultProps} disabled />);
+
+    fireEvent.click(screen.getByText("How satisfied are you?"));
+    expect(getThumb()).not.toHaveFocus();
+  });
+
+  test("names the hidden input the primitive contributes to a surrounding form", () => {
+    // The primitive mirrors its value into a hidden input whenever it sits inside a form - which it always
+    // does in the survey runtime. Unnamed, that input is a form field the browser reports as unidentifiable
+    // and no consumer can read; the control's own id is the stable name for it.
+    const { container } = render(
+      <form>
+        <Slider {...defaultProps} value={45} />
+      </form>
+    );
+    const hidden = container.querySelector<HTMLInputElement>('input[style*="display: none"]');
+
+    expect(hidden).not.toBeNull();
+    expect(hidden).toHaveAttribute("name", "test-slider-input");
+  });
+
+  // -------------------------------------------------------------------------
+  // Error announcement, focus visibility and pointer targets
+  // -------------------------------------------------------------------------
+
+  test("announces the error as soon as it appears", () => {
+    // Submitting leaves focus on the submit button, so without a live region the message is inserted in
+    // silence and a respondent using a screen reader is told nothing at all. The container is mounted only
+    // while there is a message, so its insertion is the announcement.
+    render(<Slider {...defaultProps} required errorMessage="Please pick a value" />);
+    const alert = screen.getByRole("alert");
+
+    expect(alert).toHaveAttribute("id", "test-slider-input-error");
+    expect(alert).toHaveAttribute("aria-live", "assertive");
+    expect(alert).toHaveAttribute("aria-atomic", "true");
+    expect(alert).toHaveTextContent("Please pick a value");
+    // Still reachable on demand from the control itself, for a respondent who arrives at it later.
+    expect(getThumb()).toHaveAttribute("aria-describedby", "test-slider-input-error");
+  });
+
+  test("declares no live region while there is nothing to announce", () => {
+    render(<Slider {...defaultProps} />);
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  test("keeps a focus indicator in forced colours, where a ring cannot paint", () => {
+    // Forced colours suppress box shadows, so the three rings the handle uses disappear; `outline-none` left
+    // nothing behind them and a focused handle became indistinguishable from an unfocused one. This utility
+    // suppresses the browser's own indicator in normal colours and declares an outline for forced colours to
+    // repaint, so exactly one indicator is visible in either rendering.
+    const { container } = render(<Slider {...defaultProps} />);
+    const thumb = getSlot(container, "slider-thumb");
+
+    expect(thumb).toHaveClass("focus-visible:outline-hidden");
+    expect(thumb).not.toHaveClass("outline-none");
+  });
+
+  test("extends the pointer target of the handle and the rail beyond what they paint", () => {
+    // 20px of handle and 8px of rail are both far under the 44px a fingertip needs. A transparent
+    // pseudo-element is hit tested as part of the element that owns it and sits out of flow, so it enlarges
+    // the target without moving the layout or painting anything: 20px + 12px on each side, and 8px + 18px
+    // above and below, are 44px each.
+    const { container } = render(<Slider {...defaultProps} />);
+
+    expect(getSlot(container, "slider-thumb")).toHaveClass(
+      "before:absolute",
+      "before:-inset-3",
+      "before:content-['']"
+    );
+    expect(getSlot(container, "slider")).toHaveClass(
+      "before:absolute",
+      "before:inset-x-0",
+      "before:-inset-y-[18px]",
+      "before:content-['']"
+    );
   });
 });

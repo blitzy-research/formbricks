@@ -1647,6 +1647,7 @@
         "slider_range_too_wide": "Диапазон между минимумом и максимумом слишком велик",
         "slider_step_cannot_exceed_range": "Шаг не может быть больше диапазона",
         "slider_step_must_be_greater_than_zero": "Шаг должен быть больше 0",
+        "slider_step_too_fine_for_range": "Шаг слишком мал, чтобы значения в этом диапазоне можно было выбрать",
         "smiley": "Смайлик",
         "spam_protection_note": "Защита от спама не работает для опросов, отображаемых с помощью SDK iOS, React Native и Android. Это приведёт к сбою опроса.",
         "spam_protection_threshold_description": "Установите значение от 0 до 1, ответы ниже этого значения будут отклонены.",
