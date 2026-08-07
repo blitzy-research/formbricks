@@ -9,6 +9,7 @@
     "finish": "إنهاء",
     "language_switch": "تبديل اللغة",
     "next": "التالي",
+    "no_value_selected": "لم يتم تحديد أي قيمة",
     "open_in_new_tab": "فتح في علامة تبويب جديدة",
     "people_responded": "{count, plural, one {شخص واحد استجاب} two {شخصان استجابا} few {{count} أشخاص استجابوا} many {{count} شخصًا استجابوا} other {{count} شخص استجابوا}}",
     "please_retry_now_or_try_again_later": "يرجى إعادة المحاولة الآن أو المحاولة مرة أخرى لاحقًا.",
@@ -73,6 +74,7 @@
       "message": "تعذر إرسال ردك لأنه تم تصنيفه كنشاط آلي. إذا كنت تتنفس، يرجى المحاولة مرة أخرى.",
       "title": "لم نتمكن من التحقق من أنك إنسان."
     },
+    "step_multiple_of": "يرجى إدخال قيمة بزيادات قدرها {step}",
     "value_must_contain": "يجب أن تحتوي القيمة على {value}",
     "value_must_equal": "يجب أن تساوي القيمة {value}",
     "value_must_not_contain": "يجب ألا تحتوي القيمة على {value}",

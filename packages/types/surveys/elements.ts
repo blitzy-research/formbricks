@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ZStorageUrl, ZUrl } from "../common";
 import { ZI18nString } from "../i18n";
 import { ZAllowedFileExtension } from "../storage";
-import { TSurveyElementTypeEnum } from "./constants";
+import { TSurveyElementTypeEnum, parseSurveySliderConfiguration } from "./constants";
 import { FORBIDDEN_IDS } from "./validation";
 import { ZValidationRules } from "./validation-rules";
 
@@ -15,7 +15,13 @@ import { ZValidationRules } from "./validation-rules";
  * However, we re-export it here so that most consumers (who also need the Zod schemas)
  * can import everything from a single file (`elements.ts`).
  */
-export { TSurveyElementTypeEnum };
+export { TSurveyElementTypeEnum, parseSurveySliderConfiguration };
+export type {
+  TSurveySliderConfiguration,
+  TSurveySliderConfigurationIssue,
+  TSurveySliderConfigurationIssueCode,
+  TSurveySliderConfigurationResult,
+} from "./constants";
 
 // Element ID validation (same rules as questions - USER EDITABLE)
 export const ZSurveyElementId = z.string().superRefine((id, ctx) => {
@@ -375,6 +381,33 @@ export const ZSurveyPaymentElement = ZSurveyElementBase.extend({
 
 export type TSurveyPaymentElement = z.infer<typeof ZSurveyPaymentElement>;
 
+// `range` intentionally overrides the numeric-literal union declared on ZSurveyElementBase: a slider is a
+// continuous scale described by its own { min, max } bounds rather than one of the fixed rating scales.
+export const ZSurveySliderElement = ZSurveyElementBase.extend({
+  type: z.literal(TSurveyElementTypeEnum.Slider),
+  range: z.object({ min: z.number(), max: z.number() }),
+  step: z.number(),
+  lowerLabel: ZI18nString.optional(),
+  upperLabel: ZI18nString.optional(),
+  showValue: z.boolean().optional().default(true),
+}).superRefine((data, ctx) => {
+  // The rules live in `parseSurveySliderConfiguration` rather than here, and every layer that has to judge a
+  // slider's configuration asks that one function: this schema, the editor panel that marks the offending
+  // field, and the response evaluator that decides whether an answer can be checked at all. Restating them
+  // here is what would let those layers drift - an author saving a configuration the editor accepts but whose
+  // answers can never be validated, or the reverse.
+  const result = parseSurveySliderConfiguration(data);
+  if (result.valid) {
+    return;
+  }
+
+  for (const issue of result.issues) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue.message, path: issue.path });
+  }
+});
+
+export type TSurveySliderElement = z.infer<typeof ZSurveySliderElement>;
+
 // Union of all element types
 export const ZSurveyElement = z.union([
   ZSurveyOpenTextElement,
@@ -394,6 +427,7 @@ export const ZSurveyElement = z.union([
   ZSurveyContactInfoElement,
   ZSurveyOpinionScaleElement,
   ZSurveyPaymentElement,
+  ZSurveySliderElement,
 ]);
 
 export type TSurveyElement = z.infer<typeof ZSurveyElement>;

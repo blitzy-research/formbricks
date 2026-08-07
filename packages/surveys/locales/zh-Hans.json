@@ -9,6 +9,7 @@
     "finish": "完成",
     "language_switch": "语言切换",
     "next": "下一步",
+    "no_value_selected": "未选择任何值",
     "open_in_new_tab": "在新标签页中打开",
     "people_responded": "{count, plural, one {1 人已回应} other {{count} 人已回应}}",
     "please_retry_now_or_try_again_later": "请立即重试或稍后再试。",
@@ -73,6 +74,7 @@
       "message": "您的响应未能提交，因为它被标记为自动活动。如果您是人类，请重试。",
       "title": "我们无法验证你是人类。"
     },
+    "step_multiple_of": "请输入以{step}为增量的值",
     "value_must_contain": "值必须包含{value}",
     "value_must_equal": "值必须等于{value}",
     "value_must_not_contain": "值不能包含{value}",

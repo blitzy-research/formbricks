@@ -9,6 +9,7 @@
     "finish": "Fertig",
     "language_switch": "Sprachwechsel",
     "next": "Weiter",
+    "no_value_selected": "Kein Wert ausgewählt",
     "open_in_new_tab": "In neuem Tab öffnen",
     "people_responded": "{count, plural, one {1 Person hat geantwortet} other {{count} Personen haben geantwortet}}",
     "please_retry_now_or_try_again_later": "Bitte versuchen Sie es jetzt erneut oder später noch einmal.",
@@ -73,6 +74,7 @@
       "message": "Ihre Antwort konnte nicht übermittelt werden, da sie als automatisierte Aktivität eingestuft wurde. Wenn Sie atmen, versuchen Sie es bitte erneut.",
       "title": "Wir konnten nicht verifizieren, dass du ein Mensch bist."
     },
+    "step_multiple_of": "Bitte geben Sie einen Wert in Schritten von {step} ein",
     "value_must_contain": "Wert muss {value} enthalten",
     "value_must_equal": "Wert muss {value} entsprechen",
     "value_must_not_contain": "Wert darf {value} nicht enthalten",

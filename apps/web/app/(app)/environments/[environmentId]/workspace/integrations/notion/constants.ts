@@ -1,6 +1,16 @@
 import { TSurveyElementTypeEnum } from "@formbricks/types/surveys/elements";
 
-export const TYPE_MAPPING = {
+/**
+ * Notion column types every element type may be mapped onto.
+ *
+ * The mapping UI dereferences this map by element type without a fallback — `MappingRow` calls
+ * `TYPE_MAPPING[type].includes(...)` when a pair is selected and `TYPE_MAPPING[type].join(...)` when it
+ * reports an incompatible pair — while the element dropdown offers every element of the selected survey.
+ * An element type absent from this map is therefore a runtime TypeError rather than a degraded experience,
+ * so the `Record` is exhaustive over the element type enum: a new element type cannot compile until it
+ * declares the columns it accepts.
+ */
+export const TYPE_MAPPING: Record<TSurveyElementTypeEnum, string[]> = {
   [TSurveyElementTypeEnum.CTA]: ["checkbox"],
   [TSurveyElementTypeEnum.MultipleChoiceMulti]: ["multi_select"],
   [TSurveyElementTypeEnum.MultipleChoiceSingle]: ["select", "status"],
@@ -29,6 +39,8 @@ export const TYPE_MAPPING = {
   [TSurveyElementTypeEnum.Ranking]: ["rich_text"],
   [TSurveyElementTypeEnum.OpinionScale]: ["number"],
   [TSurveyElementTypeEnum.Payment]: ["rich_text"],
+  // A slider answer is a single number, exactly like the other numeric element types above.
+  [TSurveyElementTypeEnum.Slider]: ["number"],
 };
 
 export const UNSUPPORTED_TYPES_BY_NOTION = [

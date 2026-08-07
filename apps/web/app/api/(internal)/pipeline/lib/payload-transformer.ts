@@ -15,7 +15,7 @@ import { getElementsFromBlocks } from "@/lib/survey/utils";
 // ---------------------------------------------------------------------------
 
 /**
- * Maps each of the 17 Formbricks element types to corresponding Typeform-compatible
+ * Maps each of the 18 Formbricks element types to corresponding Typeform-compatible
  * field type string and answer type string.
  *
  * For PictureSelection the default answerType is "choice" (single-select).
@@ -40,6 +40,7 @@ const ELEMENT_TYPE_TO_TYPEFORM_MAP: Record<string, { fieldType: string; answerTy
   [TSurveyElementTypeEnum.PictureSelection]: { fieldType: "picture_choice", answerType: "choice" },
   [TSurveyElementTypeEnum.Payment]: { fieldType: "payment", answerType: "payment" },
   [TSurveyElementTypeEnum.CTA]: { fieldType: "yes_no", answerType: "boolean" },
+  [TSurveyElementTypeEnum.Slider]: { fieldType: "number", answerType: "number" },
 };
 
 // ---------------------------------------------------------------------------
@@ -73,12 +74,13 @@ const buildDefinitionFields = (survey: TSurvey): TTypeformFieldDefinition[] => {
 
 /**
  * Transforms a single response data value into a Typeform-compatible answer object.
- * Returns null if the response value is undefined/null (question was not answered)
- * or if the element type has no known mapping.
+ * Returns null if the response value is undefined/null (question was not answered),
+ * if the element type has no known mapping, or if a slider's stored value is not a
+ * finite number.
  *
- * Handles all 17 element types including:
+ * Handles all 18 element types including:
  * - text types: openText, cal, matrix, address, contactInfo
- * - number types: rating, opinionScale, nps
+ * - number types: rating, opinionScale, nps, slider
  * - boolean types: consent ("accepted" → true), cta ("clicked" → true)
  * - choice: multipleChoiceSingle, pictureSelection (single)
  * - choices: multipleChoiceMulti, ranking, pictureSelection (multi)
@@ -90,7 +92,7 @@ const buildDefinitionFields = (survey: TSurvey): TTypeformFieldDefinition[] => {
  * @param elementType - The TSurveyElementTypeEnum value string
  * @param responseValue - The raw response value from response.data
  * @param element - The full element object for accessing type-specific properties
- * @returns TTypeformAnswer or null if value is absent / type is unmapped
+ * @returns TTypeformAnswer or null if value is absent / type is unmapped / a slider value is not finite
  */
 const transformAnswer = (
   elementId: string,
@@ -141,7 +143,26 @@ const transformAnswer = (
     }
 
     case "number": {
-      // Applies to: rating, opinionScale, nps
+      // Applies to: rating, opinionScale, nps, slider
+      if (elementType === TSurveyElementTypeEnum.Slider) {
+        // A slider answer is contractually a single number, and the shared evaluator already rejects every
+        // other shape at ingress, so anything else here is corruption rather than an answer. Coercing it
+        // would be wrong in both directions: `Number("")` and `Number([])` are both 0, which for a slider
+        // whose range starts at 0 is indistinguishable from a real selection, while `Number({})` is NaN,
+        // which has no JSON representation and is rejected outright by `ZTypeformCompatiblePayload`. Omitting
+        // the answer instead reuses how an unanswered question is already reported, so a consumer sees
+        // "no answer" rather than a plausible wrong one.
+        if (typeof responseValue !== "number" || !Number.isFinite(responseValue)) {
+          return null;
+        }
+
+        baseAnswer.number = responseValue;
+        break;
+      }
+
+      // Rating, NPS and opinion scale stay tolerant of a numeric string, because a stored answer for those
+      // three legitimately is one and `computeScore` parses a stored `"5"` for them the same way. Narrowing
+      // them here would withhold answers their consumers already receive.
       baseAnswer.number = typeof responseValue === "number" ? responseValue : Number(responseValue);
       break;
     }

@@ -1,10 +1,10 @@
 /**
  * Epic 4.2 — Migration Safety: Backward-Compatibility Test Suite
  *
- * Validates that the expanded ZSurveyElement discriminated union (now 17 members,
- * previously 15 — includes new OpinionScale and Payment element types) is non-breaking
- * and additive-only. Also confirms that existing surveys parse correctly through the
- * updated ZSurvey schema with the legacy question-based model.
+ * Validates that the expanded ZSurveyElement discriminated union (now 18 members, grown from the
+ * original 15 by OpinionScale, Payment and Slider) is non-breaking and additive-only. Also confirms
+ * that existing surveys parse correctly through the updated ZSurvey schema with the legacy
+ * question-based model.
  *
  * This file uses pure Zod schema validation — no Prisma, no I/O, no mocks.
  */
@@ -58,10 +58,10 @@ const LEGACY_ELEMENT_TYPES = [
   "contactInfo",
 ] as const;
 
-/** 2 new element types added during Sprints 1-3 */
-const NEW_ELEMENT_TYPES = ["opinionScale", "payment"] as const;
+/** 3 new element types added after the legacy 15: the Sprints 1-3 pair plus Slider */
+const NEW_ELEMENT_TYPES = ["opinionScale", "payment", "slider"] as const;
 
-/** All 17 element type keys for iteration */
+/** All 18 element type keys for iteration */
 const ALL_ELEMENT_TYPES = [...LEGACY_ELEMENT_TYPES, ...NEW_ELEMENT_TYPES] as const;
 
 /**
@@ -157,7 +157,7 @@ const elementFixtures: Record<string, Record<string, unknown>> = {
     company: createToggleInputConfig("Company"),
   }),
 
-  // --- New types added in Sprints 1-3 (2) ---------------------------------
+  // --- New types added after the legacy 15 (3) ----------------------------
 
   opinionScale: createMinimalElement("opinionScale", {
     scaleRange: 5,
@@ -168,6 +168,17 @@ const elementFixtures: Record<string, Record<string, unknown>> = {
     currency: "usd",
     amount: 1000,
     stripeIntegration: { publicKey: "pk_test_123" },
+  }),
+
+  // The reference configuration from the Slider specification: a 0..100 range in steps of 5. `range` is
+  // an object here rather than one of the numeric literals the base element schema allows, which is the
+  // one shape in this matrix that overrides a base field instead of adding to it.
+  slider: createMinimalElement("slider", {
+    range: { min: 0, max: 100 },
+    step: 5,
+    lowerLabel: { default: "Not satisfied" },
+    upperLabel: { default: "Very satisfied" },
+    showValue: true,
   }),
 };
 
@@ -411,14 +422,30 @@ describe("Epic 4.2 — Backward Compatibility Tests", () => {
         expect(result.data.type).toBe(TSurveyElementTypeEnum.Payment);
       }
     });
+
+    test("parses slider element correctly (NEW)", () => {
+      const result = ZSurveyElement.safeParse(elementFixtures.slider);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.type).toBe(TSurveyElementTypeEnum.Slider);
+        // The slider is the only member whose `range` is an object rather than one of the base schema's
+        // preset numeric literals, so the round trip has to preserve both bounds and the step untouched
+        // rather than dropping the overridden field.
+        expect(result.data).toMatchObject({
+          range: { min: 0, max: 100 },
+          step: 5,
+          showValue: true,
+        });
+      }
+    });
   });
 
   // -------------------------------------------------------------------------
   // Phase 4 — TSurveyElementTypeEnum completeness
   // -------------------------------------------------------------------------
   describe("TSurveyElementTypeEnum completeness", () => {
-    test("enum contains exactly 17 members", () => {
-      expect(Object.values(TSurveyElementTypeEnum).length).toBe(17);
+    test("enum contains exactly 18 members", () => {
+      expect(Object.values(TSurveyElementTypeEnum).length).toBe(18);
     });
 
     test("all 15 legacy types are present in the enum", () => {
@@ -446,10 +473,11 @@ describe("Epic 4.2 — Backward Compatibility Tests", () => {
       }
     });
 
-    test("both new types (payment, opinionScale) are present in the enum", () => {
+    test("all 3 new types (payment, opinionScale, slider) are present in the enum", () => {
       const enumValues = Object.values(TSurveyElementTypeEnum);
       expect(enumValues).toContain("payment");
       expect(enumValues).toContain("opinionScale");
+      expect(enumValues).toContain("slider");
     });
 
     test("enum keys map to expected string literal values", () => {
@@ -470,6 +498,7 @@ describe("Epic 4.2 — Backward Compatibility Tests", () => {
       expect(TSurveyElementTypeEnum.ContactInfo).toBe("contactInfo");
       expect(TSurveyElementTypeEnum.Payment).toBe("payment");
       expect(TSurveyElementTypeEnum.OpinionScale).toBe("opinionScale");
+      expect(TSurveyElementTypeEnum.Slider).toBe("slider");
     });
   });
 
@@ -537,7 +566,10 @@ describe("Epic 4.2 — Backward Compatibility Tests", () => {
       expect(result.success).toBe(true);
     });
 
-    test("all 17 element type fixtures produce the correct type discriminator", () => {
+    test("all 18 element type fixtures produce the correct type discriminator", () => {
+      // Asserted before the loop so a shortened inventory cannot make this test pass by iterating less.
+      expect(ALL_ELEMENT_TYPES).toHaveLength(18);
+
       for (const elementType of ALL_ELEMENT_TYPES) {
         const fixture = elementFixtures[elementType];
         const result = ZSurveyElement.safeParse(fixture);

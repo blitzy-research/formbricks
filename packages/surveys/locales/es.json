@@ -9,6 +9,7 @@
     "finish": "Finalizar",
     "language_switch": "Cambio de idioma",
     "next": "Siguiente",
+    "no_value_selected": "Ningún valor seleccionado",
     "open_in_new_tab": "Abrir en nueva pestaña",
     "people_responded": "{count, plural, one {1 persona respondió} other {{count} personas respondieron}}",
     "please_retry_now_or_try_again_later": "Por favor, inténtalo ahora o prueba más tarde.",
@@ -73,6 +74,7 @@
       "message": "Su respuesta no pudo ser enviada porque fue marcada como actividad automatizada. Si respira, por favor inténtelo de nuevo.",
       "title": "No pudimos verificar que eres humano."
     },
+    "step_multiple_of": "Por favor, introduce un valor en incrementos de {step}",
     "value_must_contain": "El valor debe contener {value}",
     "value_must_equal": "El valor debe ser igual a {value}",
     "value_must_not_contain": "El valor no debe contener {value}",

@@ -454,6 +454,18 @@ export const getLogicRules = (t: TFunction) => {
           },
         ],
       },
+      [TSurveyElementTypeEnum.Slider]: {
+        options: [
+          {
+            label: t("environments.surveys.edit.is_submitted"),
+            value: ZSurveyLogicConditionsOperator.Enum.isSubmitted,
+          },
+          {
+            label: t("environments.surveys.edit.is_skipped"),
+            value: ZSurveyLogicConditionsOperator.Enum.isSkipped,
+          },
+        ],
+      },
     },
     ["variable.text"]: {
       options: [

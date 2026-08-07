@@ -9,6 +9,7 @@
     "finish": "Finish",
     "language_switch": "Language switch",
     "next": "Next",
+    "no_value_selected": "No value selected",
     "open_in_new_tab": "Open in new tab",
     "people_responded": "{count, plural, one {1 person responded} other {{count} people responded}}",
     "please_retry_now_or_try_again_later": "Please retry now or try again later.",
@@ -73,6 +74,7 @@
       "message": "Your response could not be submitted because it was flagged as automated activity. If you breathe, please try again.",
       "title": "We could not verify that you are human."
     },
+    "step_multiple_of": "Please enter a value in increments of {step}",
     "value_must_contain": "Value must contain {value}",
     "value_must_equal": "Value must equal {value}",
     "value_must_not_contain": "Value must not contain {value}",

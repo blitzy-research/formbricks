@@ -4,7 +4,7 @@ import { toast } from "react-hot-toast";
 import { ZEndingCardUrl } from "@formbricks/types/common";
 import { TI18nString } from "@formbricks/types/i18n";
 import { ZSegmentFilters } from "@formbricks/types/segment";
-import { TSurveyElementTypeEnum } from "@formbricks/types/surveys/constants";
+import { TSurveyElementTypeEnum, parseSurveySliderConfiguration } from "@formbricks/types/surveys/constants";
 import {
   TInputFieldConfig,
   TSurveyAddressElement,
@@ -17,6 +17,7 @@ import {
   TSurveyOpenTextElement,
   TSurveyPaymentElement,
   TSurveyPictureSelectionElement,
+  TSurveySliderElement,
 } from "@formbricks/types/surveys/elements";
 import {
   TSurvey,
@@ -135,6 +136,17 @@ export const validationRules = {
   },
   address: (element: TSurveyAddressElement, languages: TSurveyLanguage[]) => {
     return handleI18nCheckForContactAndAddressFields(element, languages);
+  },
+  slider: (element: TSurveySliderElement) => {
+    // A slider's numeric configuration is what makes it answerable at all: inverted bounds leave no selectable
+    // range and a non-positive or over-wide step leaves no grid. The survey schema already refuses to save such
+    // an element, so without a rule here the editor would accept the id the save reported as invalid and then
+    // immediately drop it again - the card would never be marked, and the author would be told only by a toast
+    // that the element cannot be saved, with nothing pointing at which field is wrong.
+    //
+    // The verdict is delegated to the same function the element schema refines against, so the editor and the
+    // schema cannot disagree about which configurations are usable.
+    return parseSurveySliderConfiguration(element).valid;
   },
   // Assuming headline is of type TI18nString
   defaultValidation: (element: TSurveyElement, languages: TSurveyLanguage[]) => {

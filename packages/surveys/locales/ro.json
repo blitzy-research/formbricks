@@ -9,6 +9,7 @@
     "finish": "Finalizează",
     "language_switch": "Schimbare limbă",
     "next": "Următorul",
+    "no_value_selected": "Nicio valoare selectată",
     "open_in_new_tab": "Deschide într-o filă nouă",
     "people_responded": "{count, plural, one {1 persoană a răspuns} other {{count} persoane au răspuns}}",
     "please_retry_now_or_try_again_later": "Te rugăm să încerci din nou acum sau mai târziu.",
@@ -73,6 +74,7 @@
       "message": "Răspunsul dumneavoastră nu a putut fi trimis deoarece a fost marcat ca activitate automată. Dacă respirați, încercați din nou.",
       "title": "Nu am putut verifica dacă ești om."
     },
+    "step_multiple_of": "Vă rugăm să introduceți o valoare în incremente de {step}",
     "value_must_contain": "Valoarea trebuie să conțină {value}",
     "value_must_equal": "Valoarea trebuie să fie egală cu {value}",
     "value_must_not_contain": "Valoarea nu trebuie să conțină {value}",

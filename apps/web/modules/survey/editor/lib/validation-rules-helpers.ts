@@ -37,6 +37,7 @@ export const getRuleLabels = (t: (key: string) => string): Record<string, string
   phone: t("environments.surveys.edit.validation.phone"),
   min_value: t("environments.surveys.edit.validation.min_value"),
   max_value: t("environments.surveys.edit.validation.max_value"),
+  step_multiple_of: t("environments.surveys.edit.validation.step_multiple_of"),
   min_selections: t("environments.surveys.edit.validation.min_selections"),
   max_selections: t("environments.surveys.edit.validation.max_selections"),
   characters: t("environments.surveys.edit.validation.characters"),

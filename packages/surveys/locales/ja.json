@@ -9,6 +9,7 @@
     "finish": "完了",
     "language_switch": "言語切替",
     "next": "次へ",
+    "no_value_selected": "値が選択されていません",
     "open_in_new_tab": "新しいタブで開く",
     "people_responded": "{count, plural, other {{count}人が回答しました}}",
     "please_retry_now_or_try_again_later": "今すぐ再試行するか、後でもう一度お試しください。",
@@ -73,6 +74,7 @@
       "message": "自動化された活動としてフラグが立てられたため、回答を送信できませんでした。人間の方は、もう一度お試しください。",
       "title": "あなたが人間であることを確認できませんでした。"
     },
+    "step_multiple_of": "{step}刻みの値を入力してください",
     "value_must_contain": "値に{value}を含める必要があります",
     "value_must_equal": "値は{value}と等しい必要があります",
     "value_must_not_contain": "値に{value}を含めることはできません",

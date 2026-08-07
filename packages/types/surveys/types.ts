@@ -29,6 +29,7 @@ import {
   ZSurveyPictureSelectionElement,
   ZSurveyRankingElement,
   ZSurveyRatingElement,
+  ZSurveySliderElement,
 } from "./elements";
 import { validateElementLabels } from "./elements-validation";
 import {
@@ -3080,6 +3081,14 @@ const isInvalidOperatorsForElementType = (
         isInvalidOperator = true;
       }
       break;
+    case TSurveyElementTypeEnum.Slider:
+      // Mirrors Payment, and names its operators for the same reason every branch in this switch does: the
+      // schema - not the editor - is what guards a survey definition written through the management API, so
+      // the two operators the editor's logic-rule registry offers for a slider are the two accepted here.
+      if (!["isSubmitted", "isSkipped"].includes(operator)) {
+        isInvalidOperator = true;
+      }
+      break;
     case TSurveyElementTypeEnum.CTA:
       if (!["isClicked", "isNotClicked"].includes(operator)) {
         isInvalidOperator = true;
@@ -4333,6 +4342,25 @@ export const ZSurveyElementSummaryPayment = z.object({
 
 export type TSurveyElementSummaryPayment = z.infer<typeof ZSurveyElementSummaryPayment>;
 
+export const ZSurveyElementSummarySlider = z.object({
+  type: z.literal(TSurveyElementTypeEnum.Slider),
+  element: ZSurveySliderElement,
+  responseCount: z.number(),
+  /**
+   * The mean of the submitted values.
+   *
+   * `.finite()` is load-bearing: in the installed Zod, `z.number()` rejects `NaN` but ACCEPTS `Infinity` and
+   * `-Infinity`, and a non-finite mean serializes to `null` on its way to the client. Declaring the bound
+   * here is what stops such a summary - cached, or assembled by hand - from being accepted as valid.
+   */
+  average: z.number().finite(),
+  dismissed: z.object({
+    count: z.number(),
+  }),
+});
+
+export type TSurveyElementSummarySlider = z.infer<typeof ZSurveyElementSummarySlider>;
+
 export const ZSurveyElementSummary = z.union([
   ZSurveyElementSummaryOpenText,
   ZSurveyElementSummaryMultipleChoice,
@@ -4350,6 +4378,7 @@ export const ZSurveyElementSummary = z.union([
   ZSurveyElementSummaryContactInfo,
   ZSurveyElementSummaryOpinionScale,
   ZSurveyElementSummaryPayment,
+  ZSurveyElementSummarySlider,
 ]);
 
 export type TSurveyElementSummary = z.infer<typeof ZSurveyElementSummary>;

@@ -37,6 +37,7 @@ import { PaymentElementForm } from "@/modules/survey/editor/components/payment-e
 import { PictureSelectionForm } from "@/modules/survey/editor/components/picture-selection-form";
 import { RankingElementForm } from "@/modules/survey/editor/components/ranking-element-form";
 import { RatingElementForm } from "@/modules/survey/editor/components/rating-element-form";
+import { SliderElementForm } from "@/modules/survey/editor/components/slider-element-form";
 import { formatTextWithSlashes } from "@/modules/survey/editor/lib/utils";
 import { getElementIconMap, getTSurveyElementTypeEnumName } from "@/modules/survey/lib/elements";
 import { Alert, AlertButton, AlertTitle } from "@/modules/ui/components/alert";
@@ -197,6 +198,7 @@ export const BlockCard = ({
     [TSurveyElementTypeEnum.ContactInfo]: ContactInfoElementForm,
     [TSurveyElementTypeEnum.OpinionScale]: OpinionScaleElementForm,
     [TSurveyElementTypeEnum.Payment]: PaymentElementForm,
+    [TSurveyElementTypeEnum.Slider]: SliderElementForm,
   };
 
   // Elements that need lastElement prop

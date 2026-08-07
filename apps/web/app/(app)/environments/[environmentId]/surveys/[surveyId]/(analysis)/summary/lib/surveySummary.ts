@@ -1066,6 +1066,39 @@ export const getElementSummary = async (
 
         break;
       }
+      case TSurveyElementTypeEnum.Slider: {
+        let totalResponseCount = 0;
+        let totalValue = 0;
+        let dismissed = 0;
+
+        responses.forEach((response) => {
+          const answer = response.data[element.id];
+          if (typeof answer === "number") {
+            totalResponseCount++;
+            totalValue += answer;
+          } else if (response.ttc && response.ttc[element.id] > 0) {
+            dismissed++;
+          }
+        });
+
+        const average = convertFloatTo2Decimal(totalValue / totalResponseCount) || 0;
+
+        summary.push({
+          type: element.type,
+          element,
+          responseCount: totalResponseCount,
+          // `ZSurveyElementSummarySlider` declares this `z.number().finite()`, and the bound is what the
+          // guard here upholds: `z.number()` on its own rejects NaN but ACCEPTS Infinity, and a non-finite
+          // mean would serialize to null on its way to the client. Only answers near the top of the double
+          // range can reach that, which no ordinary survey produces.
+          average: Number.isFinite(average) ? average : 0,
+          dismissed: {
+            count: dismissed,
+          },
+        });
+
+        break;
+      }
     }
   }
 

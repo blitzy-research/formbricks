@@ -1,5 +1,10 @@
 import type { TFunction } from "i18next";
 import type { TResponseData, TResponseDataValue } from "@formbricks/types/responses";
+// Imported from `constants` rather than through the `elements` re-export on purpose: `elements` evaluates
+// every Zod schema in the survey type system at module load, which would put the whole of Zod into the
+// respondent bundle. `constants` is the deliberately dependency-free half of the same source of truth.
+import { parseSurveySliderConfiguration } from "@formbricks/types/surveys/constants";
+import type { TSurveySliderConfiguration } from "@formbricks/types/surveys/constants";
 import type { TSurveyElement } from "@formbricks/types/surveys/elements";
 import { TSurveyElementTypeEnum } from "@formbricks/types/surveys/elements";
 import type {
@@ -28,6 +33,10 @@ const isEmpty = (value: TResponseDataValue): boolean => {
 
 /**
  * Create a required field error
+ *
+ * `ruleId: "required"` is what identifies this verdict; no rule produced it. The `ruleType` beside it is
+ * carried unchanged for every element type, deliberately outside the structural categories - see
+ * `VALIDATION_STRUCTURAL_ERROR_TYPES` in `@formbricks/types/surveys/validation-rules` for why.
  */
 const createRequiredError = (t: TFunction): TValidationError => {
   return {
@@ -158,6 +167,115 @@ const checkRequiredField = (
 };
 
 /**
+ * Check the response value shape for elements whose answer contract is a single number.
+ *
+ * A slider answer is contractually exactly one number, but the transport schema `ZResponseDataValue`
+ * deliberately admits strings, arrays and records for the other element types, and every response route
+ * reaches this evaluator through `validateBlockResponses`. The range rules are intentionally lenient - they
+ * coerce with `Number.parseFloat` and skip values they cannot parse - so a payload such as `"50"`,
+ * `"50junk"` or `["50"]` posted straight to the API passes both of them. This gate answers such a payload
+ * with a single error that names its shape as the reason, keeping the server authoritative over the response
+ * contract while leaving the numeric rules element-agnostic and reusable. It stands independently of the
+ * injected rules - the grid rule refuses a non-number as well - so the contract holds wherever the two
+ * overlap and the respondent still reads one accurate reason.
+ *
+ * Absence is `checkRequiredField`'s business, so the caller runs this gate only when that check stayed
+ * silent: an unanswered optional slider stays valid and an unanswered required slider yields exactly one
+ * "required" error rather than a duplicate structural complaint.
+ */
+const checkSliderValueType = (
+  element: TSurveyElement,
+  value: TResponseDataValue,
+  t: TFunction
+): TValidationError | null => {
+  if (element.type !== TSurveyElementTypeEnum.Slider) {
+    return null;
+  }
+
+  // `undefined`, or a defensive `null`, is what counts as "no answer" here. `isEmpty` additionally treats
+  // "", [] and {} as empty, which is correct for the text and choice contracts but wrong for this one: those
+  // shapes are *present* values of the wrong type. Classifying them as absent would let an optional slider
+  // skip this gate and pass validation carrying a non-numeric answer.
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  // `Number.isFinite` additionally rejects NaN and +/-Infinity, neither of which is a submittable value.
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return null;
+  }
+
+  return {
+    ruleId: "sliderValueType",
+    // Not a rule verdict: no rule ran. The category says what refused the answer, so the API metadata agrees
+    // with the message beside it rather than naming a rule that was never reached.
+    ruleType: "valueType",
+    message: t("errors.invalid_format"),
+  };
+};
+
+/**
+ * Read a slider's numeric configuration, or `null` when it cannot be trusted.
+ *
+ * The decision is `parseSurveySliderConfiguration`'s, not this function's - the same function the element
+ * schema refines against and the editor panel marks its fields from. Delegating rather than restating is what
+ * makes the two entry points agree BY CONSTRUCTION: a configuration an author can save is exactly one whose
+ * answers can be checked, and any other is refused by both. Restated rules could drift, and either direction
+ * of that drift is a defect - an author saving a slider that rejects every answer, or a slider whose answers
+ * are validated against a grid the schema would not have allowed.
+ *
+ * The read has to be defensive because a survey saved from the editor's draft autosave path reaches
+ * persistence without passing the element schema, so at runtime `range` or `step` can be absent or
+ * non-numeric even though the compiled type declares them present. The parser takes `unknown` for that
+ * reason, and routing every read through here keeps the rule injector free of unguarded dereferences - an
+ * absent `range` would otherwise raise a TypeError and surface as a generic 500.
+ */
+const readSliderConfig = (element: TSurveyElement): TSurveySliderConfiguration | null => {
+  if (element.type !== TSurveyElementTypeEnum.Slider) {
+    return null;
+  }
+
+  const result = parseSurveySliderConfiguration(element);
+  return result.valid ? result.configuration : null;
+};
+
+/**
+ * Reject a submitted slider value whose element configuration cannot be trusted.
+ *
+ * Without this the three intrinsic rules simply would not be injected for a malformed slider, leaving the
+ * answer unconstrained: a value outside any intended range and off any intended grid would pass response
+ * validation. Failing closed keeps the server authoritative even for a survey whose element definition is
+ * incomplete, and does so with a validation error rather than the TypeError an unguarded configuration read
+ * would raise.
+ */
+const checkSliderConfiguration = (
+  element: TSurveyElement,
+  value: TResponseDataValue,
+  t: TFunction
+): TValidationError | null => {
+  if (element.type !== TSurveyElementTypeEnum.Slider) {
+    return null;
+  }
+
+  // Absence is `checkRequiredField`'s business: an unanswered optional slider stays valid even when the
+  // element itself is a half-finished draft, exactly as it does for every other element type.
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (readSliderConfig(element) !== null) {
+    return null;
+  }
+
+  return {
+    ruleId: "sliderConfiguration",
+    // The element's own definition is what failed here, not the respondent's answer and not a rule.
+    ruleType: "elementConfiguration",
+    message: t("errors.invalid_format"),
+  };
+};
+
+/**
  * Add implicit validation rules for OpenText elements based on inputType
  */
 const addImplicitOpenTextRules = (element: TSurveyElement, rules: TValidationRule[]): TValidationRule[] => {
@@ -223,6 +341,50 @@ const addImplicitContactInfoRules = (
       params: {},
     } as TValidationRule);
   }
+
+  return rules;
+};
+
+/**
+ * Add implicit validation rules for Slider elements
+ *
+ * A slider's bounds and step grid are intrinsic to its own configuration, so they are derived from the
+ * element here and enforced by the ordinary rule engine.
+ *
+ * `offset` anchors grid alignment at `range.min` rather than at zero, so a 10-50 range with a step of 5
+ * accepts 10, 15 and 20 while rejecting 12.
+ *
+ * All three rules are appended unconditionally: a slider has no author-configurable rules, so nothing can
+ * suppress a constraint the schema promises.
+ *
+ * No rule carries a `field`, so `getFieldValue` passes the element's whole value - the single numeric
+ * answer - into each validator.
+ */
+const addImplicitSliderRules = (element: TSurveyElement, rules: TValidationRule[]): TValidationRule[] => {
+  // Returns null for every other element type as well, so this doubles as the type guard. A slider whose
+  // configuration cannot be trusted yields no rules; `checkSliderConfiguration` rejects its answers instead.
+  const config = readSliderConfig(element);
+  if (config === null) {
+    return rules;
+  }
+
+  rules.push(
+    {
+      id: "__implicit_slider_min__",
+      type: "minValue",
+      params: { min: config.min },
+    } as TValidationRule,
+    {
+      id: "__implicit_slider_max__",
+      type: "maxValue",
+      params: { max: config.max },
+    } as TValidationRule,
+    {
+      id: "__implicit_slider_step__",
+      type: "stepMultipleOf",
+      params: { step: config.step, offset: config.min },
+    } as TValidationRule
+  );
 
   return rules;
 };
@@ -367,17 +529,36 @@ export const validateElementResponse = (
     errors.push(requiredError);
   }
 
+  // The slider's structural gates run before any rule, and whichever of the two fires ends the evaluation:
+  // one mistake earns one error, and the rules would only restate it - or, on a value with no numeric
+  // meaning at all, add the contradictory pair "at least {min}" and "no greater than {max}". Reached only
+  // when the required check stayed silent, so an unanswered required slider still reports exactly one
+  // "required" error.
+  if (!requiredError) {
+    const sliderError =
+      checkSliderValueType(element, value, t) ?? checkSliderConfiguration(element, value, t);
+    if (sliderError) {
+      errors.push(sliderError);
+      return { valid: false, errors };
+    }
+  }
+
   // Validation rules apply to matrix elements regardless of required status
 
-  // Get validation rules
-  const validation = (
-    element as TSurveyElement & { validation?: { rules?: TValidationRule[]; logic?: "and" | "or" } }
-  ).validation;
+  // Get validation rules. A slider's constraints are intrinsic rather than author-configured, so any
+  // `validation` block carried by one is discarded: that is what keeps the three injected rules from being
+  // replaced by a same-type rule or short-circuited by `logic: "or"`.
+  const validation =
+    element.type === TSurveyElementTypeEnum.Slider
+      ? undefined
+      : (element as TSurveyElement & { validation?: { rules?: TValidationRule[]; logic?: "and" | "or" } })
+          .validation;
   let rules: TValidationRule[] = [...(validation?.rules ?? [])];
 
   // Add implicit rules based on element type
   rules = addImplicitOpenTextRules(element, rules);
   rules = addImplicitContactInfoRules(element, rules);
+  rules = addImplicitSliderRules(element, rules);
 
   if (rules.length === 0) {
     return { valid: errors.length === 0, errors };

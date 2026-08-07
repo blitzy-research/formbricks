@@ -25,11 +25,12 @@ export const ZValidationRuleType = z.enum([
   "contains",
   "doesNotContain",
 
-  // Numeric rules (for OpenText inputType=number)
+  // Numeric rules
   "minValue",
   "maxValue",
   "isGreaterThan",
   "isLessThan",
+  "stepMultipleOf",
 
   // Selection rules (MultiSelect)
   "minSelections",
@@ -84,6 +85,14 @@ export const ZValidationRuleParamsMinValue = z.object({
 
 export const ZValidationRuleParamsMaxValue = z.object({
   max: z.number(),
+});
+
+// `offset` anchors the `step` grid at a non-zero origin - min=10/step=5 accepts 15 but rejects 12 - and
+// defaults to 0 when omitted. `step` is the required key that discriminates this member from every other
+// member of the params union.
+export const ZValidationRuleParamsStepMultipleOf = z.object({
+  step: z.number(),
+  offset: z.number().optional(),
 });
 
 export const ZValidationRuleParamsMinSelections = z.object({
@@ -184,6 +193,7 @@ export const ZValidationRuleParams = z.union([
   ZValidationRuleParamsAnswerAllRows,
   ZValidationRuleParamsFileExtensionIs,
   ZValidationRuleParamsFileExtensionIsNot,
+  ZValidationRuleParamsStepMultipleOf,
 ]);
 
 export type TValidationRuleParams = z.infer<typeof ZValidationRuleParams>;
@@ -215,6 +225,7 @@ export type TValidationRuleParamsMinRowsAnswered = z.infer<typeof ZValidationRul
 export type TValidationRuleParamsAnswerAllRows = z.infer<typeof ZValidationRuleParamsAnswerAllRows>;
 export type TValidationRuleParamsFileExtensionIs = z.infer<typeof ZValidationRuleParamsFileExtensionIs>;
 export type TValidationRuleParamsFileExtensionIsNot = z.infer<typeof ZValidationRuleParamsFileExtensionIsNot>;
+export type TValidationRuleParamsStepMultipleOf = z.infer<typeof ZValidationRuleParamsStepMultipleOf>;
 
 // Validation rule stored on element - discriminated union with type at top level
 // Field property is optional and used for address/contact info elements to target specific sub-fields
@@ -298,6 +309,9 @@ export const APPLICABLE_RULES: Record<string, TValidationRuleType[]> = {
   contactInfo: [...CONTACT_INFO_RULES],
   payment: ["minValue", "maxValue"],
   opinionScale: [],
+  // Intentionally empty, mirroring opinionScale: a slider's range and step-grid constraints are
+  // intrinsic to its configuration rather than author-selectable.
+  slider: [],
 };
 
 // Type helper to filter validation rules by allowed types
@@ -322,10 +336,39 @@ export type TValidationRulesForFileUpload = TValidationRulesForElementType<typeo
 export type TValidationRulesForAddress = TValidationRulesForElementType<typeof ADDRESS_RULES>;
 export type TValidationRulesForContactInfo = TValidationRulesForElementType<typeof CONTACT_INFO_RULES>;
 
+/**
+ * Categories for validation errors that are not the outcome of a validation RULE.
+ *
+ * Some answers are refused before any rule is reached, because the response itself does not meet the
+ * element's structural contract: the value is of a type the element never accepts, or the element's own
+ * configuration cannot be trusted to judge it. Those verdicts are still validation errors - they reach a
+ * respondent and an API caller through exactly the same channel - but describing them with a rule type would
+ * misattribute them to a rule that did not run and, in the API's error metadata, contradict the message
+ * beside it.
+ *
+ * - `valueType` - the submitted value is not of the type this element's answer contract admits.
+ * - `elementConfiguration` - the element's own definition is incomplete or contradictory, so no answer to it
+ *   can be validated; the answer is refused rather than accepted unchecked.
+ *
+ * A required element left unanswered is structural in the same sense, and is deliberately NOT listed here.
+ * Its error is raised for every element type, and it is identified by its own `ruleId: "required"`, which is
+ * what a consumer reads to recognize it; recategorizing its `ruleType` would change the error metadata every
+ * existing element type already emits, for a verdict that is already unambiguous. New categories are
+ * therefore added here only for verdicts that had no identity of their own beforehand.
+ */
+export const VALIDATION_STRUCTURAL_ERROR_TYPES = ["valueType", "elementConfiguration"] as const;
+
+export type TValidationStructuralErrorType = (typeof VALIDATION_STRUCTURAL_ERROR_TYPES)[number];
+
+/**
+ * What an error was decided by: the rule that rejected the value, or the structural category that did.
+ */
+export type TValidationErrorType = TValidationRuleType | TValidationStructuralErrorType;
+
 // Validation error returned by evaluator
 export interface TValidationError {
   ruleId: string;
-  ruleType: TValidationRuleType;
+  ruleType: TValidationErrorType;
   message: string;
 }
 
