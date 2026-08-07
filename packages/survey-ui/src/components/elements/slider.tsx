@@ -49,6 +49,47 @@ const VALUE_ADJUSTING_KEYS = new Set([
 ]);
 
 /**
+ * One respondent gesture, identified so that only the event that began it can end it.
+ *
+ * A press and a key press end on different events - `pointerup` and `keyup` - and two presses can be in
+ * flight at once on a touch screen, so the gesture is recorded rather than merely flagged. `pointerId` is
+ * what makes a release attributable: it names the very pointer whose contact began the gesture, so a release
+ * from any other pointer, of any type, is not the end of this one.
+ */
+type Interaction = { kind: "pointer"; pointerId: number } | { kind: "keyboard" };
+
+/**
+ * Whether the event ending a gesture is the one that began it.
+ *
+ * Without this, a gesture left open by a cancellation could be closed by an entirely unrelated later
+ * release - the release of a press that began somewhere else, with a different pointer, possibly of a
+ * different type - and that release would answer the question with whatever position the handle is parked on.
+ */
+const isSameInteraction = (began: Interaction | null, ending: Interaction): boolean => {
+  if (began === null) return false;
+  if (began.kind === "pointer") {
+    return ending.kind === "pointer" && began.pointerId === ending.pointerId;
+  }
+
+  return ending.kind === "keyboard";
+};
+
+/**
+ * Whether a pointer event describes the PRIMARY button.
+ *
+ * `button` is `0` for the primary mouse button, for a finger in contact and for a pen tip; `1` and `2` are
+ * the middle and secondary mouse buttons and `3`/`4` the browser-navigation ones. Only the primary button
+ * expresses a selection - a secondary press opens a context menu and a middle press scrolls or opens a link,
+ * and neither is an act of answering a question. Any of them nonetheless produces a full `pointerdown`,
+ * `pointerup` pair over the control, which is why the button has to be read rather than assumed.
+ *
+ * Read from `button` alone, deliberately. `isPrimary` distinguishes the first contact of a multi-touch
+ * gesture, not the button, and it is `false` on a synthesized event by specification - so gating on it would
+ * reject the very interactions this control exists for.
+ */
+const isPrimaryButton = (event: { button: number }): boolean => event.button === 0;
+
+/**
  * Classes on the selected-value readout.
  *
  * Written as one literal, and deliberately not composed through `cn`: that helper merges classes it reads
@@ -200,6 +241,11 @@ interface SliderProps {
  * unanswered control parks the handle at `min` with the handle left unfilled, so a slider nobody touched
  * stays distinguishable from one answered with `min`. `onChange` receives a plain number.
  *
+ * Interaction. Only the primary button answers the question. A secondary or middle press is refused outright,
+ * so it can neither start a slide nor be mistaken on release for a selection of the parked position. A press
+ * the browser cancels is dropped rather than left open, and a release only completes the very press that began
+ * it, so nothing an unrelated later pointer does can fabricate an answer.
+ *
  * Accessibility. The primitive supplies `role="slider"`, the live value semantics and the full key contract -
  * arrow keys step by one increment, Page keys jump, Home and End move to the bounds - and the handle carries
  * the role, the value, the required state and the focus, the primitive's own root having no role at all. The
@@ -217,7 +263,9 @@ interface SliderProps {
  * Appearance. Every part is token-driven - no colour, radius or font is hard-coded and no new `--fb-*`
  * variable is introduced - and each carries a stable slot attribute a consumer can target: `slider`,
  * `slider-track`, `slider-range` and `slider-thumb`. `dir` accepts `"ltr"`, `"rtl"` or `"auto"`, and the
- * track, the fill and the endpoint labels invert together. The handle answers hover, focus and press with
+ * track, the fill and the endpoint labels invert together. `lowerLabel` and `upperLabel` are independently
+ * optional, and each is drawn at the endpoint it names whether or not the other is present. The handle
+ * answers hover, focus and press with
  * three distinct rings - a pale 2px halo, a 3px brand ring offset by a ring of the input surface, and a 5px
  * halo while held - none of which changes its geometry, so nothing under the respondent's pointer moves.
  * Under forced colours, where a ring cannot paint at all, focus is shown as an outline the mode fills with a
@@ -340,11 +388,13 @@ function Slider({
    */
   const reportedDuringInteraction = React.useRef(false);
 
-  // Whether the interaction now ending actually began on this control. `pointerup` fires on release over the
-  // handle however the press started, so without this record a press begun elsewhere and merely finished here
-  // would answer the question with the position the handle happens to be parked on. A ref rather than state,
-  // because nothing about it is rendered and it has to be readable within the interaction that wrote it.
-  const pressBeganOnControl = React.useRef(false);
+  // The gesture in progress, or `null` when there is none. `pointerup` fires on release over the handle
+  // however the press started, so without this record a press begun elsewhere and merely finished here would
+  // answer the question with the position the handle happens to be parked on. Recording WHICH gesture is open
+  // rather than merely that one is - see `Interaction` - is what additionally stops a gesture the browser
+  // cancelled from being closed by an unrelated later release. A ref rather than state, because nothing about
+  // it is rendered and it has to be readable within the interaction that wrote it.
+  const interactionRef = React.useRef<Interaction | null>(null);
 
   const handleValueChange = (next: number[]): void => {
     if (disabled) return;
@@ -359,9 +409,24 @@ function Slider({
     }
   };
 
-  const beginInteraction = (): void => {
+  const beginInteraction = (interaction: Interaction): void => {
     reportedDuringInteraction.current = false;
-    pressBeganOnControl.current = true;
+    interactionRef.current = interaction;
+  };
+
+  /**
+   * Drops the gesture in progress without completing it.
+   *
+   * A cancellation is not a release: the browser has taken the pointer away - a touch became a scroll, the
+   * window lost focus, the device was disconnected - and no `pointerup` will follow for it. Left recorded, the
+   * abandoned gesture would be closed by whatever release came next, however unrelated, and that release would
+   * answer the question with the position the handle is parked on. Clearing it is what makes the cancellation
+   * final, and what leaves the committed answer - which lives in the caller's state, not here - exactly as it
+   * was before the gesture began.
+   */
+  const abandonInteraction = (): void => {
+    interactionRef.current = null;
+    reportedDuringInteraction.current = false;
   };
 
   /**
@@ -373,13 +438,19 @@ function Slider({
    * could not be completed at its own minimum. Only an interaction that reported nothing, on a control that
    * is still unanswered, is completed this way - so an interaction that did report cannot have its answer
    * overwritten by the position the handle happened to start from.
+   *
+   * Completes only the gesture that is actually open, and only from the event that began it. Anything else -
+   * a release with no gesture recorded, a release from a different pointer, a key release closing a press -
+   * leaves both the gesture and the answer untouched.
    */
-  const endInteraction = (): void => {
-    // Consumed whatever the outcome, so one press can complete at most one selection.
-    const beganHere = pressBeganOnControl.current;
-    pressBeganOnControl.current = false;
+  const endInteraction = (ending: Interaction): void => {
+    if (!isSameInteraction(interactionRef.current, ending)) return;
 
-    if (!beganHere || disabled || hasValue || reportedDuringInteraction.current) return;
+    // Consumed whatever the outcome, so one press can complete at most one selection.
+    const reported = reportedDuringInteraction.current;
+    abandonInteraction();
+
+    if (disabled || hasValue || reported) return;
 
     const parkedValue = toElementValue(offsetValue);
     if (Number.isFinite(parkedValue)) {
@@ -387,15 +458,50 @@ function Slider({
     }
   };
 
+  /**
+   * Opens a press, or refuses one that cannot express a selection.
+   *
+   * A non-primary press is stopped here rather than merely ignored. `preventDefault` is what stops it: the
+   * primitive composes its own `pointerdown` behind this handler and skips it once the default is prevented,
+   * so a secondary or middle press never captures the pointer, never starts a slide and never moves focus to
+   * the handle. Without that, the primitive would answer the question from the press position - and this
+   * component would answer it from the parked position on release - for an input the respondent never meant
+   * as an answer.
+   *
+   * A non-primary press arriving DURING a primary one leaves that primary gesture exactly as it is: it is not
+   * reopened, which would forget that a value had already been reported, and not abandoned, which would
+   * discard a press the respondent is still making.
+   */
+  const handlePointerDown = (event: React.PointerEvent<HTMLSpanElement>): void => {
+    if (!isPrimaryButton(event)) {
+      event.preventDefault();
+      return;
+    }
+
+    beginInteraction({ kind: "pointer", pointerId: event.pointerId });
+  };
+
+  /**
+   * Closes a press.
+   *
+   * A non-primary release is not the end of a primary press - releasing the secondary button while the
+   * primary one is still held is exactly that case - so it neither completes nor abandons the gesture.
+   */
+  const handlePointerUp = (event: React.PointerEvent<HTMLSpanElement>): void => {
+    if (!isPrimaryButton(event)) return;
+
+    endInteraction({ kind: "pointer", pointerId: event.pointerId });
+  };
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLSpanElement>): void => {
     if (VALUE_ADJUSTING_KEYS.has(event.key)) {
-      beginInteraction();
+      beginInteraction({ kind: "keyboard" });
     }
   };
 
   const handleKeyUp = (event: React.KeyboardEvent<HTMLSpanElement>): void => {
     if (VALUE_ADJUSTING_KEYS.has(event.key)) {
-      endInteraction();
+      endInteraction({ kind: "keyboard" });
     }
   };
 
@@ -525,8 +631,17 @@ function Slider({
           step={safeStep}
           value={[offsetValue]}
           onValueChange={handleValueChange}
-          onPointerDown={beginInteraction}
-          onPointerUp={endInteraction}
+          onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerUp}
+          // Both are cancellations, and both are needed. `pointercancel` is the browser saying the contact is
+          // gone without a release - a touch that became a scroll, a window that lost focus, a device that was
+          // unplugged. `lostpointercapture` covers the quieter case of the capture the primitive takes being
+          // dropped without a cancel at all, which leaves the release to be delivered somewhere else entirely.
+          // Neither can be confused with a normal completion: the release runs this component's own
+          // `pointerup` before the primitive releases its capture, so a completed press has already closed its
+          // own gesture by the time either of these could arrive.
+          onPointerCancel={abandonInteraction}
+          onLostPointerCapture={abandonInteraction}
           onKeyDown={handleKeyDown}
           onKeyUp={handleKeyUp}
           disabled={disabled}
@@ -618,9 +733,21 @@ function Slider({
           </SliderPrimitive.Thumb>
         </SliderPrimitive.Root>
 
-        {/* Endpoint labels, laid out exactly as the OpinionScale label row is so the two controls align */}
+        {/* Endpoint labels, laid out exactly as the OpinionScale label row is so the two controls align.
+            Each label is independently optional, and the justification names the endpoint the labels present
+            actually describe: `justify-between` drives two labels to opposite ends, but a LONE label falls
+            back to main-start whichever endpoint it belongs to - so an upper label authored without a lower
+            one was drawn under the MINIMUM, indistinguishable from a lower label and stating the opposite of
+            what the author wrote. `justify-end` puts it back on the maximum.
+
+            Expressed as flex justification rather than as a logical margin on the label, because the two
+            resolve against different elements: justification resolves against this row's own direction, which
+            is the direction the track and the fill are laid out in, while `margin-inline-start` would resolve
+            against the LABEL's direction - and the label carries `dir`, including `dir="auto"`, whose value is
+            derived from the label's text. A right-to-left label inside a left-to-right row would then be
+            pushed to the opposite end of the one the fill grows towards. */}
         {(lowerLabel ?? upperLabel) ? (
-          <div className="mt-4 flex justify-between gap-8 px-1.5">
+          <div className={cn("mt-4 flex gap-8 px-1.5", lowerLabel ? "justify-between" : "justify-end")}>
             {lowerLabel ? (
               <Label variant="default" className="max-w-[50%] text-xs leading-6" dir={dir}>
                 {lowerLabel}

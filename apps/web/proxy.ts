@@ -7,6 +7,50 @@ import { isAuthProtectedRoute, isRouteAllowedForDomain } from "@/app/middleware/
 import { WEBAPP_URL } from "@/lib/constants";
 import { isValidCallbackUrl } from "@/lib/utils/url";
 
+/**
+ * Methods that cannot change state, and are therefore not a request-forgery concern.
+ */
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * The value a browser sends as the origin of a document that has no origin of its own.
+ */
+const OPAQUE_ORIGIN = "null";
+
+/**
+ * Refuses a state-changing request to an authenticated route that declares an opaque origin.
+ *
+ * Server Actions are protected against cross-site request forgery by comparing the request's `Origin` with
+ * its host, but that comparison is skipped entirely for the literal value `null`: the framework reads an
+ * opaque origin as *no* origin, warns that the header is missing, and dispatches the action anyway. A
+ * document with an opaque origin - one inside a sandboxed frame, or served from a `data:` URL - can
+ * therefore reach an authenticated action with the session cookie attached, while the same request from a
+ * *named* foreign origin is correctly aborted. Treating "cannot be compared" as "matches" is the gap this
+ * closes, and it closes it ahead of action decoding, which is the only place the request can still be
+ * refused as a whole.
+ *
+ * Deliberately narrow, because an opaque origin is not by itself illegitimate:
+ * - only unsafe methods, so nothing that merely reads is affected;
+ * - only routes that require a session, which is where a forged request has anything to gain and where the
+ *   only non-API `POST` is a Server Action;
+ * - never the API surface, whose client endpoints are called by the embedded survey SDK from arbitrary -
+ *   and legitimately opaque - origins, and which authenticates by key and declares its own CORS policy;
+ * - never an absent `Origin`, which a browser always sends for an unsafe request and whose absence
+ *   therefore describes a non-browser caller rather than a forged one.
+ */
+const handleOpaqueOrigin = (request: NextRequest): Response | null => {
+  if (SAFE_METHODS.has(request.method)) return null;
+  if (request.headers.get("origin") !== OPAQUE_ORIGIN) return null;
+  if (!isAuthProtectedRoute(request.nextUrl.pathname)) return null;
+
+  logger.warn(
+    { method: request.method, pathname: request.nextUrl.pathname },
+    "Rejected a state-changing request carrying an opaque origin"
+  );
+
+  return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+};
+
 const handleAuth = async (request: NextRequest): Promise<Response | null> => {
   const token = await getToken({ req: request as any });
 
@@ -57,6 +101,11 @@ const handleDomainAwareRouting = (request: NextRequest): Response | null => {
 };
 
 export const proxy = async (originalRequest: NextRequest) => {
+  // Refuse a forged-looking request before anything else looks at it, so that the rejection is the whole
+  // response rather than a decision taken inside the handler it was aimed at.
+  const opaqueOriginResponse = handleOpaqueOrigin(originalRequest);
+  if (opaqueOriginResponse) return opaqueOriginResponse;
+
   // Handle domain-aware routing first
   const domainResponse = handleDomainAwareRouting(originalRequest);
   if (domainResponse) return domainResponse;

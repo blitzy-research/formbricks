@@ -171,6 +171,56 @@ export const WithDescription: Story = {
   },
 };
 
+/**
+ * Both endpoint labels, driven to opposite ends of the track.
+ */
+export const WithEndpointLabels: Story = {
+  args: {
+    elementId: "slider-both-labels",
+    inputId: "slider-input-both-labels",
+    headline: "How likely are you to recommend us?",
+    min: 0,
+    max: 100,
+    step: 5,
+    lowerLabel: "Not likely",
+    upperLabel: "Very likely",
+  },
+};
+
+/**
+ * Only the upper label authored, which the schema accepts.
+ *
+ * The label has to sit at the MAXIMUM end - the endpoint it names - rather than
+ * falling back to the start of the row, where it would be indistinguishable
+ * from a lower label and would state the opposite of what the author wrote.
+ * Compare it with `WithEndpointLabels` above: "Very likely" occupies the same
+ * position in both.
+ */
+export const WithUpperLabelOnly: Story = {
+  args: {
+    elementId: "slider-upper-label-only",
+    inputId: "slider-input-upper-label-only",
+    headline: "How likely are you to recommend us?",
+    min: 0,
+    max: 100,
+    step: 5,
+    upperLabel: "Very likely",
+  },
+};
+
+/** Only the lower label authored, drawn at the minimum end. */
+export const WithLowerLabelOnly: Story = {
+  args: {
+    elementId: "slider-lower-label-only",
+    inputId: "slider-input-lower-label-only",
+    headline: "How likely are you to recommend us?",
+    min: 0,
+    max: 100,
+    step: 5,
+    lowerLabel: "Not likely",
+  },
+};
+
 export const Required: Story = {
   args: {
     elementId: "slider-required",
@@ -220,6 +270,26 @@ export const RTL: Story = {
     max: 100,
     step: 5,
     lowerLabel: "غير محتمل",
+    upperLabel: "محتمل جداً",
+  },
+};
+
+/**
+ * A lone upper label in a right-to-left survey.
+ *
+ * The endpoint is resolved against the row's own direction, so the label lands
+ * on the logical maximum - which right-to-left paints on the LEFT, the end the
+ * fill grows towards.
+ */
+export const RTLWithUpperLabelOnly: Story = {
+  args: {
+    elementId: "slider-rtl-upper-label-only",
+    dir: "rtl",
+    inputId: "slider-input-rtl-upper-label-only",
+    headline: "ما مدى احتمالية أن توصي بنا؟",
+    min: 0,
+    max: 100,
+    step: 5,
     upperLabel: "محتمل جداً",
   },
 };

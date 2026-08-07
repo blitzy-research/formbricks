@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { logger } from "@formbricks/logger";
-import { DatabaseError, InvalidInputError } from "@formbricks/types/errors";
+import { DatabaseError, InvalidInputError, ValidationError } from "@formbricks/types/errors";
 import { TResponse, TResponseInput, ZResponseInput } from "@formbricks/types/responses";
 import { responses } from "@/app/lib/api/response";
 import { transformErrorToDetails } from "@/app/lib/api/validator";
@@ -59,6 +59,18 @@ export const GET = withV1ApiWrapper({
         ),
       };
     } catch (error) {
+      // A malformed `surveyId` is a bad request, not a server fault. The survey lookup validates its input
+      // and throws a `ValidationError` for an id that is not a cuid2, and without this branch that error
+      // reached the wrapper's catch-all and was reported as HTTP 500 - telling the caller the server had
+      // broken when in fact their query string had. Mapping it to the bad-request envelope here matches what
+      // the v2 collection already answers for the same input, and what the client-side contact route does
+      // with the same error type. The message is the validation summary, which describes the caller's own
+      // input and carries nothing internal.
+      if (error instanceof ValidationError) {
+        return {
+          response: responses.badRequestResponse(error.message),
+        };
+      }
       if (error instanceof DatabaseError) {
         return {
           response: responses.badRequestResponse(error.message),

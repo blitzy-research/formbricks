@@ -53,6 +53,15 @@ const pressKey = (key: string): void => {
   fireEvent.keyUp(thumb, { key });
 };
 
+/**
+ * The endpoint-label row, which follows the primitive's root when either label is authored.
+ *
+ * Located by position rather than by class, so the assertions about which classes it carries cannot be
+ * satisfied by the selector that found it.
+ */
+const getLabelRow = (container: HTMLElement): HTMLElement | null =>
+  getSlot(container, "slider").nextElementSibling as HTMLElement | null;
+
 describe("Slider", () => {
   beforeEach(() => {
     defaultProps.onChange = vi.fn<(value: number) => void>();
@@ -358,6 +367,174 @@ describe("Slider", () => {
     expect(defaultProps.onChange).toHaveBeenCalledTimes(1);
   });
 
+  // -------------------------------------------------------------------------
+  // Which pointer input counts as answering
+  // -------------------------------------------------------------------------
+
+  test("ignores a secondary-button press, which is not an act of answering", () => {
+    // A right-click opens a context menu; it still delivers a full pointerdown/pointerup pair over the
+    // control, and answering the question from it commits a value the respondent never chose - one that can
+    // overwrite a deliberate answer and satisfies a required question on its own.
+    const { container } = render(<Slider {...defaultProps} />);
+    const root = getSlot(container, "slider");
+
+    fireEvent.pointerDown(root, { button: 2 });
+    fireEvent.pointerUp(root, { button: 2 });
+
+    expect(defaultProps.onChange).not.toHaveBeenCalled();
+  });
+
+  test("ignores a middle-button press", () => {
+    const { container } = render(<Slider {...defaultProps} />);
+    const root = getSlot(container, "slider");
+
+    fireEvent.pointerDown(root, { button: 1 });
+    fireEvent.pointerUp(root, { button: 1 });
+
+    expect(defaultProps.onChange).not.toHaveBeenCalled();
+  });
+
+  test("leaves a required control unanswered after a non-primary press", () => {
+    // What the required check reads is the absence of a value, so the state the control publishes has to say
+    // so too: an unanswered announcement and an unfilled handle.
+    const { container } = render(<Slider {...defaultProps} required unansweredLabel="Nothing chosen" />);
+    const root = getSlot(container, "slider");
+
+    fireEvent.pointerDown(root, { button: 2 });
+    fireEvent.pointerUp(root, { button: 2 });
+
+    expect(defaultProps.onChange).not.toHaveBeenCalled();
+    expect(getThumb()).toHaveAttribute("aria-valuetext", "Nothing chosen");
+    expect(getSlot(container, "slider-thumb")).toHaveClass("bg-input-bg");
+    expect(getSlot(container, "slider-thumb")).not.toHaveClass("bg-brand");
+  });
+
+  test("refuses a non-primary press outright, so the primitive never acts on it either", () => {
+    // The primitive's own pointerdown captures the pointer and moves focus to the handle - or, pressed on the
+    // rail, slides to the press position. It is composed behind this component's handler and skipped once the
+    // default is prevented, so the absence of both effects is what proves the press never reached it.
+    const { container } = render(<Slider {...defaultProps} />);
+    const thumb = getSlot(container, "slider-thumb");
+
+    fireEvent.pointerDown(thumb, { button: 2, pointerId: 4 });
+
+    expect(thumb.hasPointerCapture(4)).toBe(false);
+    expect(thumb).not.toHaveFocus();
+  });
+
+  test("still lets a primary press reach the primitive", () => {
+    const { container } = render(<Slider {...defaultProps} />);
+    const thumb = getSlot(container, "slider-thumb");
+
+    fireEvent.pointerDown(thumb, { button: 0, pointerId: 4 });
+
+    expect(thumb.hasPointerCapture(4)).toBe(true);
+    expect(thumb).toHaveFocus();
+  });
+
+  test("does not let a non-primary release end the primary press it is held during", () => {
+    // Releasing the secondary button while the primary one is still down is not the end of the press, and
+    // treating it as one would answer the question early and leave the real release with nothing to complete.
+    const { container } = render(<Slider {...defaultProps} />);
+    const root = getSlot(container, "slider");
+
+    fireEvent.pointerDown(root, { button: 0, pointerId: 1 });
+    fireEvent.pointerUp(root, { button: 2, pointerId: 1 });
+
+    expect(defaultProps.onChange).not.toHaveBeenCalled();
+
+    fireEvent.pointerUp(root, { button: 0, pointerId: 1 });
+
+    expect(defaultProps.onChange).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Recovering from a press the browser takes away
+  // -------------------------------------------------------------------------
+
+  test("drops a cancelled press, so an unrelated later release cannot answer for it", () => {
+    // A cancellation is the browser saying the contact is gone with no release to follow - a touch that became
+    // a scroll, a window that lost focus. Left recorded, the abandoned press was closed by whatever release
+    // came next, and that release committed the position the handle was parked on.
+    const { container } = render(<Slider {...defaultProps} />);
+    const root = getSlot(container, "slider");
+
+    fireEvent.pointerDown(root, { pointerId: 5 });
+    fireEvent.pointerCancel(root, { pointerId: 5 });
+    fireEvent.pointerUp(root, { pointerId: 5 });
+
+    expect(defaultProps.onChange).not.toHaveBeenCalled();
+  });
+
+  test("drops a press whose pointer capture the browser takes back", () => {
+    const { container } = render(<Slider {...defaultProps} />);
+    const root = getSlot(container, "slider");
+
+    fireEvent.pointerDown(root, { pointerId: 5 });
+    fireEvent.lostPointerCapture(root, { pointerId: 5 });
+    fireEvent.pointerUp(root, { pointerId: 5 });
+
+    expect(defaultProps.onChange).not.toHaveBeenCalled();
+  });
+
+  test("does not let a cancelled press be closed by a different pointer", () => {
+    // The recorded press is identified by the pointer that began it, so a release from another pointer - of
+    // another type, from a gesture that began off the control entirely - is not the end of it.
+    const { container } = render(<Slider {...defaultProps} />);
+    const root = getSlot(container, "slider");
+
+    fireEvent.pointerDown(root, { pointerId: 5, pointerType: "touch" });
+    fireEvent.pointerCancel(root, { pointerId: 5, pointerType: "touch" });
+    fireEvent.pointerUp(root, { pointerId: 1, pointerType: "mouse" });
+
+    expect(defaultProps.onChange).not.toHaveBeenCalled();
+  });
+
+  test("ignores a release from a pointer other than the one that pressed", () => {
+    const { container } = render(<Slider {...defaultProps} />);
+    const root = getSlot(container, "slider");
+
+    fireEvent.pointerDown(root, { pointerId: 5 });
+    fireEvent.pointerUp(root, { pointerId: 9 });
+
+    expect(defaultProps.onChange).not.toHaveBeenCalled();
+  });
+
+  test("completes the press made by the pointer that began it, whatever its id", () => {
+    const { container } = render(<Slider {...defaultProps} />);
+    const root = getSlot(container, "slider");
+
+    fireEvent.pointerDown(root, { pointerId: 9 });
+    fireEvent.pointerUp(root, { pointerId: 9 });
+
+    expect(defaultProps.onChange).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  test("keeps a press and a key press from completing one another", () => {
+    // They end on different events, so a release of the wrong kind must leave the interaction it found alone.
+    const { container } = render(<Slider {...defaultProps} />);
+    const root = getSlot(container, "slider");
+
+    fireEvent.keyDown(getThumb(), { key: "Home" });
+    fireEvent.pointerUp(root);
+    expect(defaultProps.onChange).not.toHaveBeenCalled();
+
+    fireEvent.keyUp(getThumb(), { key: "Home" });
+    expect(defaultProps.onChange).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  test("recovers for the next press after one is cancelled", () => {
+    const { container } = render(<Slider {...defaultProps} />);
+    const root = getSlot(container, "slider");
+
+    fireEvent.pointerDown(root, { pointerId: 5 });
+    fireEvent.pointerCancel(root, { pointerId: 5 });
+    fireEvent.pointerDown(root, { pointerId: 6 });
+    fireEvent.pointerUp(root, { pointerId: 6 });
+
+    expect(defaultProps.onChange).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
   test("says the control is unanswered rather than announcing its parked lower bound", () => {
     // The handle has to be drawn somewhere, so an unanswered control parks it at `min` and the role obliges
     // the primitive to publish `min` as the value. Without this a screen-reader user could not tell an
@@ -627,6 +804,55 @@ describe("Slider", () => {
 
     expect(screen.getByText("Not at all")).toBeInTheDocument();
     expect(screen.queryByText("Very much")).not.toBeInTheDocument();
+  });
+
+  test("drives two labels to opposite endpoints", () => {
+    const { container } = render(<Slider {...defaultProps} lowerLabel="Not at all" upperLabel="Very much" />);
+
+    expect(getLabelRow(container)).toHaveClass("mt-4", "flex", "gap-8", "px-1.5", "justify-between");
+  });
+
+  test("draws a lone upper label at the maximum endpoint, not the minimum", () => {
+    // Each label is independently optional, and this configuration is valid. Under `justify-between` a single
+    // child falls back to main-start, so the upper label was drawn under the MINIMUM - indistinguishable from a
+    // lower label, and stating the opposite of what the author wrote.
+    const { container } = render(<Slider {...defaultProps} upperLabel="Very likely" />);
+    const row = getLabelRow(container);
+
+    expect(row).toHaveClass("justify-end");
+    expect(row).not.toHaveClass("justify-between");
+    // The rest of the row is unchanged, so the control still aligns with its siblings.
+    expect(row).toHaveClass("mt-4", "flex", "gap-8", "px-1.5");
+    expect(row?.children).toHaveLength(1);
+    expect(row?.firstElementChild).toHaveTextContent("Very likely");
+  });
+
+  test("draws a lone lower label at the minimum endpoint", () => {
+    const { container } = render(<Slider {...defaultProps} lowerLabel="Not at all" />);
+    const row = getLabelRow(container);
+
+    // A single first child already resolves to main-start under `justify-between`, which is the minimum end.
+    expect(row).toHaveClass("justify-between");
+    expect(row).not.toHaveClass("justify-end");
+  });
+
+  test("resolves the endpoint against the row's own direction rather than the label's", () => {
+    // Justification resolves against this row, which inherits the direction the track and the fill are laid
+    // out in. A logical margin on the label would resolve against the LABEL's direction instead - and the
+    // label carries `dir`, including a `dir="auto"` whose value comes from its own text - so a label could be
+    // pushed to the opposite end from the one the fill grows towards.
+    const { container } = render(<Slider {...defaultProps} dir="rtl" upperLabel="محتمل جداً" />);
+    const row = getLabelRow(container);
+
+    expect(row).toHaveClass("justify-end");
+    expect(row).not.toHaveAttribute("dir");
+    expect(container.querySelector("#test-slider")).toHaveAttribute("dir", "rtl");
+  });
+
+  test("renders no endpoint row at all when neither label is authored", () => {
+    const { container } = render(<Slider {...defaultProps} />);
+
+    expect(getLabelRow(container)).toBeNull();
   });
 
   // -------------------------------------------------------------------------
